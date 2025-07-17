@@ -1,10 +1,13 @@
-from pyrogram import Client, types
+from pyrogram import Client, types, filters
 from httpx import AsyncClient, TimeoutException
+import pyrogram
 from pytz import timezone as _timezone
 from io import BytesIO
 from itertools import cycle, groupby
 from bisect import bisect_left
 from functools import partial
+import json
+import os
 
 import math
 import asyncio
@@ -17,11 +20,9 @@ import utils
 import constants
 import config
 
-
 timezone = _timezone(config.TIMEZONE)
 
 NULL_STR = ""
-
 
 T = typing.TypeVar("T")
 STAR_GIFT_RAW_T = dict[str, typing.Any]
@@ -31,7 +32,6 @@ BASIC_REQUEST_DATA = {
     "parse_mode": "HTML",
     "disable_web_page_preview": True
 }
-
 
 BOTS_AMOUNT = len(config.BOT_TOKENS)
 
@@ -47,6 +47,9 @@ if BOTS_AMOUNT > 0:
 STAR_GIFTS_DATA = StarGiftsData.load(config.DATA_FILEPATH)
 last_star_gifts_data_saved_time: int | None = None
 
+# Файл для хранения известных подарков
+KNOWN_GIFTS_FILE = "known_gifts.json"
+
 logger = utils.get_logger(
     name = config.SESSION_NAME,
     log_filepath = constants.LOG_FILEPATH,
@@ -54,6 +57,44 @@ logger = utils.get_logger(
     file_log_level = config.FILE_LOG_LEVEL
 )
 
+def load_known_gifts() -> set[int]:
+    """Загружает список известных подарков из файла"""
+    if os.path.exists(KNOWN_GIFTS_FILE):
+        try:
+            with open(KNOWN_GIFTS_FILE, 'r', encoding='utf-8') as f:
+                data = json.load(f)
+                return set(data.get('known_gift_ids', []))
+        except (json.JSONDecodeError, IOError) as e:
+            logger.warning(f"Ошибка при загрузке файла известных подарков: {e}")
+            return set()
+    return set()
+
+
+def save_known_gifts(known_gift_ids: set[int]) -> None:
+    """Сохраняет список известных подарков в файл"""
+    try:
+        with open(KNOWN_GIFTS_FILE, 'w', encoding='utf-8') as f:
+            json.dump({
+                'known_gift_ids': list(known_gift_ids),
+                'last_updated': utils.get_current_timestamp()
+            }, f, indent=2, ensure_ascii=False)
+        logger.debug(f"Сохранено {len(known_gift_ids)} известных подарков")
+    except IOError as e:
+        logger.error(f"Ошибка при сохранении файла известных подарков: {e}")
+
+SUBSCRIBERS_FILE = "subscribers.json"
+
+def load_subscribers() -> set[int]:
+    if os.path.exists(SUBSCRIBERS_FILE):
+        with open(SUBSCRIBERS_FILE, 'r', encoding='utf-8') as f:
+            return set(json.load(f))
+    return set()
+
+def save_subscribers(subscribers: set[int]) -> None:
+    with open(SUBSCRIBERS_FILE, 'w', encoding='utf-8') as f:
+        json.dump(list(subscribers), f, indent=2)
+
+subscribers = load_subscribers()
 
 @typing.overload
 async def bot_send_request(
@@ -110,6 +151,12 @@ async def detector(
     if new_gift_callback is None and update_gifts_queue is None:
         raise ValueError("At least one of new_gift_callback or update_gifts_queue must be provided")
 
+    # Загружаем известные подарки
+    known_gift_ids = load_known_gifts()
+    is_first_run = len(known_gift_ids) == 0
+    
+    logger.info(f"Загружено {len(known_gift_ids)} известных подарков. Первый запуск: {is_first_run}")
+
     while True:
         logger.debug("Checking for new gifts / updates...")
 
@@ -123,34 +170,65 @@ async def detector(
             for star_gift in STAR_GIFTS_DATA.star_gifts
         }
 
-        new_star_gifts = {
-            star_gift_id: star_gift
-            for star_gift_id, star_gift in all_star_gifts_dict.items()
-            if star_gift_id not in old_star_gifts_dict
-        }
+        # Текущие ID подарков из API
+        current_gift_ids = set(all_star_gifts_dict.keys())
+        
+        if is_first_run:
+            # При первом запуске сохраняем все подарки как известные
+            logger.info(f"Первый запуск: найдено {len(current_gift_ids)} подарков, сохраняем как известные")
+            known_gift_ids = current_gift_ids.copy()
+            save_known_gifts(known_gift_ids)
+            is_first_run = False
+            
+            # Также сохраняем все подарки в основное хранилище
+            if current_gift_ids:
+                new_gifts_for_storage = [
+                    star_gift for star_gift in all_star_gifts_dict.values()
+                    if star_gift.id not in old_star_gifts_dict
+                ]
+                if new_gifts_for_storage:
+                    await star_gifts_data_saver(new_gifts_for_storage)
+            
+            logger.info("Первоначальная инициализация завершена, начинаем мониторинг новых подарков")
+        else:
+            # Обычная логика - ищем только реально новые подарки
+            truly_new_gift_ids = current_gift_ids - known_gift_ids
+            
+            if truly_new_gift_ids:
+                truly_new_gifts = {
+                    gift_id: all_star_gifts_dict[gift_id]
+                    for gift_id in truly_new_gift_ids
+                }
+                
+                logger.info(f"Найдено {len(truly_new_gifts)} НОВЫХ подарков: [{', '.join(map(str, truly_new_gift_ids))}]")
+                
+                # Отправляем уведомления только о реально новых подарках
+                if new_gift_callback:
+                    for star_gift_id, star_gift in truly_new_gifts.items():
+                        await new_gift_callback(star_gift)
+                
+                # Обновляем список известных подарков
+                known_gift_ids.update(truly_new_gift_ids)
+                save_known_gifts(known_gift_ids)
+                
+                # Сохраняем новые подарки в основное хранилище
+                await star_gifts_data_saver(list(truly_new_gifts.values()))
+            else:
+                logger.debug(f"Новых подарков не найдено. Всего подарков: {len(current_gift_ids)}")
 
-        if new_star_gifts and new_gift_callback:
-            logger.info(f"""Found {len(new_star_gifts)} new gifts: [{", ".join(map(str, new_star_gifts.keys()))}]""")
-
-            for star_gift_id, star_gift in new_star_gifts.items():
-                await new_gift_callback(star_gift)
-
+        # Обновляем существующие подарки
         if update_gifts_queue:
             for star_gift_id, old_star_gift in old_star_gifts_dict.items():
                 new_star_gift = all_star_gifts_dict.get(star_gift_id)
 
                 if new_star_gift is None:
                     logger.warning("Star gift not found in new gifts, skipping for updating", extra={"star_gift_id": str(star_gift_id)})
-
                     continue
 
                 new_star_gift.message_id = old_star_gift.message_id
 
                 if new_star_gift.available_amount < old_star_gift.available_amount:
                     update_gifts_queue.put_nowait((old_star_gift, new_star_gift))
-
-        if new_star_gifts:
-            await star_gifts_data_saver(list(new_star_gifts.values()))
 
         await asyncio.sleep(config.CHECK_INTERVAL)
 
@@ -222,14 +300,22 @@ async def process_new_gift(app: Client, star_gift: StarGiftData) -> None:
 
     await asyncio.sleep(config.NOTIFY_AFTER_STICKER_DELAY)
 
+    for chat_id in subscribers:
+        binary.seek(0)  # чтобы отправка стикера не упала, тк BytesIO уже прочитан
+        user_sticker_message = await app.send_sticker(
+            chat_id = chat_id,
+            sticker = binary
+        )
+    await asyncio.sleep(config.NOTIFY_AFTER_STICKER_DELAY)
+
     response = await bot_send_request(
-        "sendMessage",
-        {
-            "chat_id": config.NOTIFY_CHAT_ID,
-            "text": get_notify_text(star_gift),
-            "reply_to_message_id": sticker_message.id
-        } | BASIC_REQUEST_DATA
-    )
+            "sendMessage",
+            {
+                "chat_id": chat_id,
+                "text": get_notify_text(star_gift),
+                "reply_to_message_id": user_sticker_message.id
+            } | BASIC_REQUEST_DATA
+        )
 
     star_gift.message_id = response["message_id"]
 
@@ -386,6 +472,28 @@ async def main() -> None:
     )
 
     await app.start()
+
+    # -------------------------
+
+    async def start_handler(client: Client, message: types.Message):
+        user_id = message.chat.id
+        if user_id not in subscribers:
+            subscribers.add(user_id)
+            save_subscribers(subscribers)
+        await message.reply_text("✅ Ты подписан на уведомления о новых подарках!")
+
+    async def stop_handler(client: Client, message: types.Message):
+        user_id = message.chat.id
+        if user_id in subscribers:
+            subscribers.remove(user_id)
+            save_subscribers(subscribers)
+        await message.reply_text("🚫 Ты отписан от уведомлений о новых подарках.")
+    
+    # Добавим handlers для /start и /stop
+    app.add_handler(pyrogram.handlers.MessageHandler(start_handler, filters.command("start")))
+    app.add_handler(pyrogram.handlers.MessageHandler(stop_handler, filters.command("stop")))
+
+    # -------------------------
 
     update_gifts_queue = (
         UPDATE_GIFTS_QUEUE_T()
