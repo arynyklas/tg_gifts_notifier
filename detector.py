@@ -219,7 +219,7 @@ async def detector(
                     if sticker_file_id_obj
                 }
 
-                logger.debug(f"Batch download of {len(downloaded_stickers_mapped)} completed.")
+                logger.info(f"Batch download of {len(downloaded_stickers_mapped)} completed.")
 
             for star_gift in sorted(new_star_gifts_found, key=lambda sg: sg.total_amount):
                 await new_gift_callback(
@@ -241,7 +241,7 @@ async def detector(
                 new_star_gift = all_star_gifts_dict.get(star_gift_id)
 
                 if new_star_gift is None:
-                    logger.warning(f"Star gift {star_gift_id} not found in new gifts, skipping for updating (it might have been removed).")
+                    logger.warning(f"Star gift {star_gift_id} not found in new gifts, skipping for updating.")
 
                     continue
 
@@ -369,6 +369,8 @@ async def process_new_gift(app: Client, star_gift: StarGiftData, sticker_binary:
 
 
 async def process_update_gifts(update_gifts_queue: UPDATE_GIFTS_QUEUE_T) -> None:
+    ignore_gift_ids: set[int] = set()
+
     while True:
         gifts_to_update: list[tuple[StarGiftData, StarGiftData]] = []
 
@@ -389,8 +391,13 @@ async def process_update_gifts(update_gifts_queue: UPDATE_GIFTS_QUEUE_T) -> None
         gifts_to_update = sorted(gifts_to_update, key=lambda gift_pair: gift_pair[0].first_appearance_timestamp or 0)
 
         for old_star_gift, new_star_gift in gifts_to_update:
-            if new_star_gift.message_id is None:
-                logger.warning(f"Cannot update star gift {new_star_gift.id}: message_id is None.")
+            if new_star_gift in ignore_gift_ids:
+                continue
+
+            elif new_star_gift.message_id is None:
+                logger.warning(f"Cannot update star gift {new_star_gift.id}: message_id is None, ignoring.")
+
+                ignore_gift_ids.add(new_star_gift.id)
 
                 continue
 
@@ -478,7 +485,7 @@ async def star_gifts_upgrades_checker(app: Client) -> None:
 
         if upgradable_star_gifts:
             if BATCH_STICKERS_DOWNLOAD:
-                logger.debug("Downloading all upgradable gift stickers in batch...")
+                logger.info("Downloading all upgradable gift stickers in batch...")
 
                 sticker_file_id_objs = {
                     star_gift.id: FileId.decode(star_gift.sticker_file_id)
@@ -516,10 +523,10 @@ async def star_gifts_upgrades_checker(app: Client) -> None:
                     if sticker_file_id_obj
                 }
 
-                logger.debug(f"Batch download of {len(downloaded_stickers_mapped)} completed.")
+                logger.info(f"Batch download of {len(downloaded_stickers_mapped)} completed.")
 
             for star_gift in upgradable_star_gifts:
-                logger.debug(f"""Sending upgrade notification for star gift {star_gift.id}.""")
+                logger.info(f"""Sending upgrade notification for star gift {star_gift.id}.""")
 
                 try:
                     sticker_binary = downloaded_stickers_mapped.get(star_gift.id) if BATCH_STICKERS_DOWNLOAD else None  # pyright: ignore[reportPossiblyUnboundVariable]
