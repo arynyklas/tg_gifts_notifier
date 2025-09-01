@@ -372,29 +372,42 @@ async def process_update_gifts(update_gifts_queue: UPDATE_GIFTS_QUEUE_T) -> None
     ignore_gift_ids: set[int] = set()
 
     while True:
-        gifts_to_update: list[tuple[StarGiftData, StarGiftData]] = []
+        star_gifts_to_update: list[tuple[StarGiftData, StarGiftData]] = []
 
         while True:
             try:
                 old_star_gift, new_star_gift = update_gifts_queue.get_nowait()
-                gifts_to_update.append((old_star_gift, new_star_gift))
+                star_gifts_to_update.append((old_star_gift, new_star_gift))
                 update_gifts_queue.task_done()
 
             except asyncio.QueueEmpty:
                 break
 
-        if not gifts_to_update:
+        if not star_gifts_to_update:
             await asyncio.sleep(0.1)
 
             continue
 
-        gifts_to_update = sorted(gifts_to_update, key=lambda gift_pair: gift_pair[0].first_appearance_timestamp or 0)
+        star_gifts_to_update = sorted(
+            star_gifts_to_update,
+            key = lambda star_gift_pair: star_gift_pair[0].first_appearance_timestamp or 0
+        )
 
-        for old_star_gift, new_star_gift in gifts_to_update:
-            if new_star_gift.id in ignore_gift_ids:
+        collapsed_star_gift_pair_map: dict[int, tuple[StarGiftData, StarGiftData]] = {}
+
+        for old_star_gift, new_star_gift in star_gifts_to_update:
+            best_star_gift_pair = collapsed_star_gift_pair_map.get(new_star_gift.id)
+
+            if not best_star_gift_pair or new_star_gift.available_amount < best_star_gift_pair[1].available_amount:
+                collapsed_star_gift_pair_map[new_star_gift.id] = (old_star_gift, new_star_gift)
+
+        star_gifts_to_update = list(collapsed_star_gift_pair_map.values())
+
+        for old_star_gift, new_star_gift in star_gifts_to_update:
+            if new_star_gift.id in ignore_gift_ids or old_star_gift.available_amount == new_star_gift.available_amount:
                 continue
 
-            elif new_star_gift.message_id is None:
+            elif old_star_gift.message_id is None:
                 logger.warning(f"Cannot update star gift {new_star_gift.id}: message_id is None, ignoring.")
 
                 ignore_gift_ids.add(new_star_gift.id)
@@ -406,12 +419,12 @@ async def process_update_gifts(update_gifts_queue: UPDATE_GIFTS_QUEUE_T) -> None
                     "editMessageText",
                     {
                         "chat_id": config.NOTIFY_CHAT_ID,
-                        "message_id": new_star_gift.message_id,
+                        "message_id": old_star_gift.message_id,
                         "text": get_notify_text(new_star_gift)
                     } | BASIC_REQUEST_DATA
                 )
 
-                logger.debug(f"Available amount of star gift {new_star_gift.id} updated from {old_star_gift.available_amount} to {new_star_gift.available_amount} (message #{new_star_gift.message_id}).")
+                logger.info(f"Available amount of star gift {new_star_gift.id} updated from {old_star_gift.available_amount} to {new_star_gift.available_amount} (message #{old_star_gift.message_id}).")
 
                 stored_star_gift_index = next((
                     i
