@@ -391,7 +391,7 @@ async def process_update_gifts(update_gifts_queue: UPDATE_GIFTS_QUEUE_T) -> None
         gifts_to_update = sorted(gifts_to_update, key=lambda gift_pair: gift_pair[0].first_appearance_timestamp or 0)
 
         for old_star_gift, new_star_gift in gifts_to_update:
-            if new_star_gift in ignore_gift_ids:
+            if new_star_gift.id in ignore_gift_ids:
                 continue
 
             elif new_star_gift.message_id is None:
