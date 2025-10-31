@@ -7,10 +7,10 @@ from pyrogram.raw.types.star_gift import StarGift
 from pyrogram.raw.types.document_attribute_filename import DocumentAttributeFilename
 from pyrogram.file_id import FileId, FileType
 
-import utils
+import utils.utils as utils
 import typing
 
-from star_gifts_data import StarGiftData
+from core.star_gifts_data import StarGiftData
 
 
 @typing.overload
@@ -29,6 +29,24 @@ async def get_all_star_gifts(
     client: Client,
     hash: int | None = None
 ) -> tuple[int, dict[int, StarGiftData] | None]:
+    """
+    Gets all star gifts from Telegram API.
+
+    Uses Telegram MTProto API to get list of star gifts.
+    If hash is passed, returns None if data hasn't changed (optimization).
+
+    Args:
+        client: Pyrogram client for connecting to Telegram API
+        hash: Optional hash for checking changes. If None, always returns data.
+
+    Returns:
+        Tuple of (hash, dict[id -> StarGiftData] | None):
+        - hash: Current gift data hash
+        - dict or None: Dictionary with gift data, or None if data hasn't changed
+
+    Raises:
+        RuntimeError: If error occurred when querying Telegram API
+    """
     r = typing.cast(StarGifts | StarGiftsNotModified, await client.invoke(
         GetStarGifts(
             hash = hash or 0
@@ -86,6 +104,16 @@ async def get_all_star_gifts(
 
 
 async def check_is_star_gift_upgradable(app: Client, star_gift_id: int) -> bool:
+    """
+    Checks if star gift can be upgraded to premium version.
+
+    Args:
+        app: Pyrogram client for connecting to Telegram API
+        star_gift_id: Gift ID to check
+
+    Returns:
+        True if gift can be upgraded, False otherwise or on error
+    """
     try:
         await app.invoke(
             GetStarGiftUpgradePreview(

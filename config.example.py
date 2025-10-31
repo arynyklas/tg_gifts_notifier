@@ -1,6 +1,6 @@
 import logging
 
-import constants
+from utils import constants
 
 
 SESSION_NAME = "account"
@@ -58,3 +58,15 @@ NOTIFY_TEXT_USER_LIMITED = "<b>{user_limited} per user</b>"
 NOTIFY_TEXT_REQUIRE_PREMIUM_AND_USER_LIMITED_SEPARATOR = " | "
 
 NOTIFY_UPGRADES_TEXT = "Gift is upgradable! (<code>{id}</code>)"
+
+# Filters configuration
+FILTER_MIN_PRICE = None  # Minimum price in stars (None to disable)
+FILTER_MAX_PRICE = None  # Maximum price in stars (None to disable)
+FILTER_LIMITED_ONLY = False  # Only notify about limited gifts
+FILTER_PREMIUM_ONLY = False  # Only notify about premium gifts
+FILTER_MAX_PERCENT_SOLD = 100.0  # Maximum sold percentage (0-100)
+FILTER_BLACKLIST_IDS = []  # Blacklist of gift IDs to ignore
+
+# Priority configuration
+NOTIFY_MIN_PRIORITY = "normal"  # Minimum priority: "critical", "high", "normal", "low"
+CRITICAL_CHAT_ID = None  # Separate chat for critical notifications (None to disable)

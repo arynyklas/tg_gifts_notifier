@@ -10,13 +10,16 @@ import math
 import asyncio
 import typing
 
-from parse_data import get_all_star_gifts, check_is_star_gift_upgradable
-from star_gifts_data import StarGiftData, StarGiftsData
+from core.parse_data import get_all_star_gifts, check_is_star_gift_upgradable
+from core.star_gifts_data import StarGiftData, StarGiftsData
 
-import utils
-import userbot_helpers
-import constants
+import utils.utils as utils
+import core.userbot_helpers as userbot_helpers
+import utils.constants as constants
 import config
+import utils.config_validator as config_validator
+import features.history_manager as history_manager
+import features.filters_and_priorities as filters_and_priorities
 
 
 timezone = _timezone(config.TIMEZONE)
@@ -55,6 +58,58 @@ logger = utils.get_logger(
     file_log_level = config.FILE_LOG_LEVEL
 )
 
+# Initialize logger for history_manager
+history_manager.init_logger(logger)
+
+
+def build_filter_config() -> filters_and_priorities.FilterConfig | None:
+    """
+    Builds filter configuration based on settings from config.
+    
+    Returns:
+        Filter configuration or None if filters are not used
+    """
+    filter_dict: filters_and_priorities.FilterConfig = {}
+    
+    if hasattr(config, 'FILTER_MIN_PRICE') and config.FILTER_MIN_PRICE is not None:
+        filter_dict["min_price"] = config.FILTER_MIN_PRICE
+    
+    if hasattr(config, 'FILTER_MAX_PRICE') and config.FILTER_MAX_PRICE is not None:
+        filter_dict["max_price"] = config.FILTER_MAX_PRICE
+    
+    if hasattr(config, 'FILTER_LIMITED_ONLY') and config.FILTER_LIMITED_ONLY:
+        filter_dict["is_limited_only"] = True
+    
+    if hasattr(config, 'FILTER_PREMIUM_ONLY') and config.FILTER_PREMIUM_ONLY:
+        filter_dict["require_premium_only"] = True
+    
+    if hasattr(config, 'FILTER_MAX_PERCENT_SOLD'):
+        filter_dict["max_percent_sold"] = config.FILTER_MAX_PERCENT_SOLD
+    
+    if hasattr(config, 'FILTER_BLACKLIST_IDS') and config.FILTER_BLACKLIST_IDS:
+        filter_dict["blacklist_ids"] = config.FILTER_BLACKLIST_IDS
+    
+    return filter_dict if filter_dict else None
+
+
+def get_min_priority() -> filters_and_priorities.NotificationPriority:
+    """
+    Gets minimum priority from configuration.
+    
+    Returns:
+        Minimum priority for notifications
+    """
+    min_priority_str = getattr(config, 'NOTIFY_MIN_PRIORITY', 'normal')
+    
+    priority_map = {
+        'critical': filters_and_priorities.NotificationPriority.CRITICAL,
+        'high': filters_and_priorities.NotificationPriority.HIGH,
+        'normal': filters_and_priorities.NotificationPriority.NORMAL,
+        'low': filters_and_priorities.NotificationPriority.LOW
+    }
+    
+    return priority_map.get(min_priority_str, filters_and_priorities.NotificationPriority.NORMAL)
+
 
 @typing.overload
 async def bot_send_request(
@@ -72,17 +127,33 @@ async def bot_send_request(
     method: str,
     data: dict[str, typing.Any] | None = None
 ) -> dict[str, typing.Any] | None:
+    """
+    Sends a request to Telegram Bot API with automatic retries.
+
+    Args:
+        method: Bot API method name (e.g., "sendMessage")
+        data: Data to send in the request
+
+    Returns:
+        Request result or None for editMessageText if message hasn't changed
+
+    Raises:
+        RuntimeError: If failed to send request after all retries
+    """
     logger.debug(f"Sending request {method} with data: {data}")
+
+    if BOTS_AMOUNT == 0:
+        raise RuntimeError("No bot tokens configured. Cannot send request to Telegram API.")
 
     retries = BOTS_AMOUNT
     response = None
+    last_exception = None
 
     for bot_token in BOT_TOKENS_CYCLE:
         retries -= 1
 
         if retries < 0:
             logger.error(f"Exceeded bot token retries for method {method}")
-
             break
 
         try:
@@ -91,14 +162,14 @@ async def bot_send_request(
                 json = data
             )).json()
 
-        except TimeoutException:
+        except TimeoutException as ex:
             logger.warning(f"Timeout exception while sending request {method} with data: {data}")
-
+            last_exception = ex
             continue
 
         except Exception as ex:
-            logger.error(f"An error occurred while sending request {method}: {ex}")
-
+            logger.error(f"An error occurred while sending request {method}: {ex}", exc_info=True)
+            last_exception = ex
             continue
 
         if response.get("ok"):
@@ -107,9 +178,19 @@ async def bot_send_request(
         elif method == "editMessageText" and isinstance(response.get("description"), str) and "message is not modified" in response["description"]:
             return
 
-        logger.warning(f"Telegram API error for method {method}: {response}")
+        # Log API error but continue attempts
+        error_code = response.get("error_code")
+        description = response.get("description", "Unknown error")
+        logger.warning(f"Telegram API error for method {method}: {error_code} - {description}")
 
-    raise RuntimeError(f"Failed to send request to Telegram API after multiple retries. Last response: {response}")
+    # If we reached here, all attempts failed
+    error_msg = f"Failed to send request to Telegram API after {BOTS_AMOUNT} retries."
+    if last_exception:
+        error_msg += f" Last exception: {last_exception}"
+    if response:
+        error_msg += f" Last response: {response}"
+    
+    raise RuntimeError(error_msg)
 
 
 async def detector(
@@ -137,7 +218,12 @@ async def detector(
 
                 continue
 
-        new_hash, all_star_gifts_dict = await get_all_star_gifts(app, current_hash)
+        try:
+            new_hash, all_star_gifts_dict = await get_all_star_gifts(app, current_hash)
+        except Exception as ex:
+            logger.error(f"Error getting star gifts: {ex}", exc_info=True)
+            await asyncio.sleep(config.CHECK_INTERVAL)
+            continue
 
         if save_only:
             if all_star_gifts_dict is None:
@@ -152,8 +238,11 @@ async def detector(
                 for star_gift in all_star_gifts_dict.values()
             ]
 
-            await star_gifts_data_saver()
-
+            try:
+                await star_gifts_data_saver()
+            except Exception as ex:
+                logger.error(f"Error saving data in save-only mode: {ex}", exc_info=True)
+            
             return
 
         if all_star_gifts_dict is None:
@@ -222,6 +311,9 @@ async def detector(
                 logger.debug(f"Batch download of {len(downloaded_stickers_mapped)} completed.")
 
             for star_gift in sorted(new_star_gifts_found, key=lambda sg: sg.total_amount):
+                # Add history for new gift
+                history_manager.add_history_entry(star_gift)
+                
                 await new_gift_callback(
                     star_gift,
                     downloaded_stickers_mapped.get(star_gift.id) if BATCH_STICKERS_DOWNLOAD else None  # pyright: ignore[reportPossiblyUnboundVariable]
@@ -232,6 +324,10 @@ async def detector(
                 await star_gifts_data_saver()
 
         elif new_star_gifts_found:
+            for star_gift in new_star_gifts_found:
+                # Add history for new gifts
+                history_manager.add_history_entry(star_gift)
+            
             STAR_GIFTS_DATA.star_gifts.extend(new_star_gifts_found)
 
             await star_gifts_data_saver()
@@ -330,6 +426,27 @@ def get_notify_text(star_gift: StarGiftData) -> str:
 
 
 async def process_new_gift(app: Client, star_gift: StarGiftData, sticker_binary: BytesIO | None) -> None:
+    # Apply filters and check priority
+    filter_config = build_filter_config()
+    min_priority = get_min_priority()
+    should_send, priority = filters_and_priorities.should_send_notification(
+        star_gift,
+        filter_config=filter_config,
+        min_priority=min_priority
+    )
+    
+    if not should_send:
+        logger.debug(f"Skipping notification for gift {star_gift.id} (filtered or priority too low)")
+        return
+    
+    # Determine where to send notification
+    chat_id = config.NOTIFY_CHAT_ID
+    critical_chat_id = getattr(config, 'CRITICAL_CHAT_ID', None)
+    
+    if priority == filters_and_priorities.NotificationPriority.CRITICAL and critical_chat_id:
+        chat_id = critical_chat_id
+        logger.info(f"Sending critical notification for gift {star_gift.id} to critical chat")
+    
     if not sticker_binary:
         sticker_binary = typing.cast(BytesIO, await app.download_media(  # pyright: ignore[reportUnknownMemberType]
             message = star_gift.sticker_file_id,
@@ -341,7 +458,7 @@ async def process_new_gift(app: Client, star_gift: StarGiftData, sticker_binary:
 
     try:
         sticker_message = typing.cast(types.Message, await app.send_sticker(  # pyright: ignore[reportUnknownMemberType]
-            chat_id = config.NOTIFY_CHAT_ID,
+            chat_id = chat_id,
             sticker = sticker_binary
         ))
 
@@ -350,7 +467,7 @@ async def process_new_gift(app: Client, star_gift: StarGiftData, sticker_binary:
         response = await bot_send_request(
             "sendMessage",
             {
-                "chat_id": config.NOTIFY_CHAT_ID,
+                "chat_id": chat_id,
                 "text": get_notify_text(star_gift),
                 "reply_to_message_id": sticker_message.id
             } | BASIC_REQUEST_DATA
@@ -359,7 +476,7 @@ async def process_new_gift(app: Client, star_gift: StarGiftData, sticker_binary:
         if response and "message_id" in response:
             star_gift.message_id = response["message_id"]
 
-            logger.info(f"Sent notification for new gift {star_gift.id}, message_id: {star_gift.message_id}")
+            logger.info(f"Sent notification for new gift {star_gift.id} (priority: {priority.value}), message_id: {star_gift.message_id}")
 
         else:
             logger.warning(f"Failed to get message_id for new gift {star_gift.id} notification.")
@@ -417,6 +534,9 @@ async def process_update_gifts(update_gifts_queue: UPDATE_GIFTS_QUEUE_T) -> None
 
                     continue
 
+                # Add history entry for updated gift
+                history_manager.add_history_entry(new_star_gift)
+                
                 STAR_GIFTS_DATA.star_gifts[stored_star_gift_index] = new_star_gift
 
                 await star_gifts_data_saver()
@@ -570,6 +690,9 @@ async def star_gifts_upgrades_checker(app: Client) -> None:
                     return
 
                 stored_star_gift.is_upgradable = True
+                
+                # Add history entry for upgradable gift
+                history_manager.add_history_entry(stored_star_gift)
 
                 await star_gifts_data_saver()
 
@@ -594,9 +717,23 @@ async def logger_wrapper(coro: typing.Awaitable[T]) -> T | None:
 
 
 async def main(save_only: bool=False) -> None:
+    """
+    Main function to start the gift detector.
+
+    Args:
+        save_only: If True, only saves gift data without monitoring
+    """
     global STAR_GIFTS_DATA
 
     logger.info("Starting gifts detector...")
+
+    # Validate configuration before startup
+    try:
+        config_validator.validate_config()
+        logger.debug("Configuration validation passed.")
+    except config_validator.ConfigValidationError as e:
+        logger.critical(f"Configuration validation failed: {e}")
+        return
 
     if save_only:
         logger.info("Save only mode enabled, skipping gift detection.")

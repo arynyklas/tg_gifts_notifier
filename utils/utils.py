@@ -9,6 +9,8 @@ import typing
 
 
 class StrippingFormatter(logging.Formatter):
+    """Log formatter that removes spaces at the beginning and end of messages."""
+    
     def format(self, record: logging.LogRecord) -> str:
         record.msg = record.msg.strip() if isinstance(record.msg, str) else record.msg
 
@@ -16,6 +18,18 @@ class StrippingFormatter(logging.Formatter):
 
 
 def get_logger(name: str, log_filepath: Path, console_log_level: int=logging.INFO, file_log_level: int=logging.INFO) -> logging.Logger:
+    """
+    Creates and configures logger with console and file output.
+
+    Args:
+        name: Logger name
+        log_filepath: Path to log file
+        console_log_level: Logging level for console
+        file_log_level: Logging level for file
+
+    Returns:
+        Configured logger with two handlers
+    """
     logger = logging.getLogger(name)
 
     logger.setLevel(min(console_log_level, file_log_level))
@@ -44,13 +58,37 @@ def get_logger(name: str, log_filepath: Path, console_log_level: int=logging.INF
 
 
 def get_current_datetime(timezone: tzinfo) -> str:
+    """
+    Returns current date and time in specified timezone.
+
+    Args:
+        timezone: Timezone for formatting
+
+    Returns:
+        String in format "dd-mm-yyyy HH:MM:SS"
+    """
     return datetime.now(tz=timezone).strftime("%d-%m-%Y %H:%M:%S")
 
 def get_current_timestamp() -> int:
+    """
+    Returns current Unix timestamp.
+
+    Returns:
+        Number of seconds since January 1, 1970
+    """
     return int(time.time())
 
 
 def pretty_int(number: int) -> str:
+    """
+    Formats integer with thousands separators.
+
+    Args:
+        number: Number to format
+
+    Returns:
+        String with formatted number (e.g., "1,234,567")
+    """
     return "{:,}".format(number)
 
 
@@ -61,6 +99,16 @@ def pretty_float(number: float, get_is_same: typing.Literal[True]) -> tuple[str,
 def pretty_float(number: float, get_is_same: typing.Literal[False]) -> str: ...
 
 def pretty_float(number: float, get_is_same: bool=False) -> tuple[str, bool] | str:
+    """
+    Formats floating point number to readable format.
+
+    Args:
+        number: Number to format
+        get_is_same: If True, returns tuple (formatted number, was number exactly the same)
+
+    Returns:
+        Formatted string or tuple (string, bool) if get_is_same=True
+    """
     formatted_number = float("{:.1g}".format(float(number)))
     formatted_number_str = np.format_float_positional(formatted_number, trim="-")
 
@@ -74,6 +122,15 @@ def pretty_float(number: float, get_is_same: bool=False) -> tuple[str, bool] | s
 
 
 def format_seconds_to_human_readable(total_seconds: int) -> str:
+    """
+    Formats number of seconds to human-readable format.
+
+    Args:
+        total_seconds: Number of seconds to format
+
+    Returns:
+        String like "X days, Y hours, Z minutes and W seconds" (simplified form)
+    """
     total_seconds = int(total_seconds)
 
     if total_seconds < 0:

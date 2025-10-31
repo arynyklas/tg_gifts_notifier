@@ -1,14 +1,50 @@
-.*/
-**__**
-**test**
-*.sh
-*.txt
-*.json
-*.session*
-*.service
-config*.py
-logs/
-**copy**
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+*.egg-info/
+dist/
+build/
 
+# Virtual environments
+venv/
+env/
+ENV/
+.venv
+
+# IDEs
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# Project specific
+*.session
+*.session-journal
+config.py
+*.json
 !requirements.txt
-!config.example.py
+*.log
+logs/
+backups/
+
+# Testing
+.pytest_cache/
+.coverage
+htmlcov/
+.tox/
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Jupyter
+.ipynb_checkpoints/
+
+# Temporary files
+*.tmp
+*.bak
+*.swp
