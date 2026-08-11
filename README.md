@@ -1,3 +1,5 @@
+
+
 # TG Gifts Notifier
 
 ## Overview
@@ -74,6 +76,8 @@ Then, you must configure the notifier by editing the `config.py` file.
 | NOTIFY_AFTER_TEXT_DELAY    | Float             | Delay (in seconds) after sending a message                                                                |
 | TIMEZONE                   | String            | Timezone for the messages' date & time (e.g., "Europe/Moscow")                                            |
 | HTTP_REQUEST_TIMEOUT       | Float             | Timeout for Bot API requests (in seconds)                                                                 |
+| CONSOLE_LOG_LEVEL          | Integer           | Logging level for console output (e.g., `logging.DEBUG`)                                                  |
+| FILE_LOG_LEVEL             | Integer           | Logging level for file output (e.g., `logging.INFO`)                                                      |
 
 ## Contact
 
