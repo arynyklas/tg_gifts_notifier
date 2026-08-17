@@ -17,8 +17,14 @@ class StarGiftData(BaseModel):
     first_appearance_timestamp: int | None = None
     last_sale_timestamp: int | None = None
     sticker_message_id: int | None = None
+    upgrade_sticker_message_id: int | None = None
     message_id: int | None = None
     is_upgradable: bool = False
+    # `None` means Telegram advertises no upgrade price for this gift.
+    upgrade_stars: int | None = None
+    # Set when an announcement was intended, cleared when its text is posted, so
+    # a run interrupted mid-announcement resumes instead of losing the gift.
+    announce_pending: bool = False
 
 
 class StarGiftsFile(BaseModel):

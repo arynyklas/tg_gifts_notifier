@@ -26,6 +26,7 @@ def _merge_live(stored: StarGiftData, live: StarGiftData) -> bool:
         and stored.user_limited == live.user_limited
         and stored.is_limited == live.is_limited
         and stored.last_sale_timestamp == live.last_sale_timestamp
+        and stored.upgrade_stars == live.upgrade_stars
     ):
         return False
 
@@ -38,6 +39,7 @@ def _merge_live(stored: StarGiftData, live: StarGiftData) -> bool:
     stored.user_limited = live.user_limited
     stored.is_limited = live.is_limited
     stored.last_sale_timestamp = live.last_sale_timestamp
+    stored.upgrade_stars = live.upgrade_stars
 
     return True
 
@@ -97,15 +99,28 @@ class StarGiftsStore:
         """Unordered live view, for scans that do not care about order."""
         return self._gifts.values()
 
+    def upgrade_candidates(self) -> list[StarGiftData]:
+        """Gifts not yet known to be upgradable, cheapest signal first."""
+        return [gift for gift in self._gifts.values() if not gift.is_upgradable]
+
     @property
     def is_dirty(self) -> bool:
         return self._dirty.is_set()
 
-    async def add(self, gift: StarGiftData) -> None:
+    async def add(self, gift: StarGiftData) -> StarGiftData:
+        """Insert a gift that is about to be announced; returns the stored one.
+
+        `add` is called only where an announcement is intended, so it is also
+        where `announce_pending` is armed. The stored instance is returned so no
+        caller depends on the store adopting its argument by reference.
+        """
         async with self._lock:
+            gift.announce_pending = True
             self._gifts[gift.id] = gift
 
         self.mark_dirty()
+
+        return gift
 
     async def apply_live_many(
         self, live: Iterable[StarGiftData]
@@ -152,6 +167,7 @@ class StarGiftsStore:
         *,
         sticker_message_id: int | None = None,
         message_id: int | None = None,
+        upgrade_sticker_message_id: int | None = None,
     ) -> None:
         async with self._lock:
             stored = self._gifts.get(gift_id)
@@ -168,6 +184,10 @@ class StarGiftsStore:
 
             if message_id is not None:
                 stored.message_id = message_id
+                stored.announce_pending = False
+
+            if upgrade_sticker_message_id is not None:
+                stored.upgrade_sticker_message_id = upgrade_sticker_message_id
 
         self.mark_dirty()
 
@@ -201,7 +221,14 @@ class StarGiftsStore:
             # another pass instead of being dropped.
             self._dirty.clear()
 
-            await self._write()
+            try:
+                await self._write()
+
+            except OSError:
+                # Re-arm so the restarted saver and the shutdown flush retry.
+                self.mark_dirty()
+
+                raise
 
     async def flush(self) -> None:
         """Write pending changes, if any."""
@@ -212,7 +239,12 @@ class StarGiftsStore:
 
         self._dirty.clear()
 
-        await self._write()
+        try:
+            await self._write()
+
+        except OSError:
+            self.mark_dirty()
+            self._logger.exception("Could not save gift data to %s", self._path)
 
     async def _write(self) -> None:
         async with self._lock:
@@ -233,7 +265,12 @@ class StarGiftsStore:
         if str(parent) not in ("", "."):
             parent.mkdir(parents=True, exist_ok=True)
 
-        tmp = self._path.with_name(self._path.name + ".tmp")
-        tmp.write_text(payload, encoding=constants.ENCODING)
+        tmp = self._path.with_name(f"{self._path.name}.{os.getpid()}.{id(payload)}.tmp")
 
-        os.replace(tmp, self._path)
+        try:
+            tmp.write_text(payload, encoding=constants.ENCODING)
+
+            os.replace(tmp, self._path)
+
+        finally:
+            tmp.unlink(missing_ok=True)

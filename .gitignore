@@ -16,6 +16,8 @@ sessions/
 *.session-journal
 
 star_gifts*.json
+# The atomic gift-file write uses a pid-unique temp name.
+*.tmp
 logs/
 *.service
 deploy*.sh

@@ -3,6 +3,8 @@ from contextlib import suppress
 import json
 from pathlib import Path
 
+import pytest
+
 from src.constants import SCHEMA_VERSION
 from src.models import StarGiftData
 from src.store import StarGiftsStore
@@ -218,8 +220,13 @@ async def test_flush_without_changes_writes_nothing(tmp_path, logger, monkeypatc
 async def test_saver_debounces_into_a_single_atomic_write(
     tmp_path, logger, monkeypatch
 ):
+    """Marks arriving inside the window must coalesce into one write.
+
+    With a near-zero debounce this passed even with the `sleep` deleted, so the
+    marks are spread across a window that is an order of magnitude shorter.
+    """
     path = tmp_path / "star_gifts.json"
-    store = StarGiftsStore(path, 0.01, logger)
+    store = StarGiftsStore(path, 0.05, logger)
 
     await store.add(_gift(20))
     await store.add(_gift(10))
@@ -237,24 +244,155 @@ async def test_saver_debounces_into_a_single_atomic_write(
 
     saver = asyncio.create_task(store.run_saver())
 
-    store.mark_dirty()
-    store.mark_dirty()
+    for _ in range(3):
+        store.mark_dirty()
+
+        await asyncio.sleep(0.01)
+
+    await asyncio.sleep(0.1)
+
+    assert writes == 1
+
     store.mark_dirty()
 
     await asyncio.sleep(0.1)
+
+    assert writes == 2
 
     saver.cancel()
 
     with suppress(asyncio.CancelledError):
         await saver
 
-    assert writes == 1
-
     payload = json.loads(path.read_text(encoding="utf-8"))
 
     assert payload["version"] == SCHEMA_VERSION
     assert [gift["id"] for gift in payload["star_gifts"]] == [10, 20]
     assert not list(tmp_path.glob("*.tmp"))
+
+
+async def test_a_failed_save_is_retried_instead_of_being_lost(
+    tmp_path, logger, monkeypatch
+):
+    """A write that raises must leave the store dirty.
+
+    `run_saver` clears the flag before writing, so without re-arming it the
+    restarted saver blocks forever and the shutdown flush reports "Nothing to
+    save", discarding every `message_id` written since the last good write.
+    """
+    path = tmp_path / "star_gifts.json"
+    store = StarGiftsStore(path, 0.0, logger)
+    original = store._write_atomic
+
+    def failing(payload: str) -> None:
+        raise OSError("disk is full")
+
+    monkeypatch.setattr(store, "_write_atomic", failing)
+
+    await store.add(_gift(10, message_id=77))
+
+    saver = asyncio.create_task(store.run_saver())
+
+    await asyncio.sleep(0.05)
+
+    assert saver.done()
+
+    with pytest.raises(OSError, match="disk is full"):
+        await saver
+
+    assert store.is_dirty is True
+    assert not path.exists()
+
+    monkeypatch.setattr(store, "_write_atomic", original)
+
+    await store.flush()
+
+    payload = json.loads(path.read_text(encoding="utf-8"))
+
+    assert payload["star_gifts"][0]["message_id"] == 77
+
+
+async def test_flush_swallows_a_write_failure_but_stays_dirty(
+    tmp_path, logger, monkeypatch
+):
+    """`flush` runs from a `finally`, where raising would replace the exit code."""
+    store = StarGiftsStore(tmp_path / "star_gifts.json", 0.0, logger)
+
+    await store.add(_gift(10))
+
+    def failing(payload: str) -> None:
+        raise OSError("read-only file system")
+
+    monkeypatch.setattr(store, "_write_atomic", failing)
+
+    await store.flush()  # must not raise
+
+    assert store.is_dirty is True
+
+
+async def test_add_arms_the_announcement_and_returns_the_stored_gift(tmp_path, logger):
+    store = StarGiftsStore(tmp_path / "star_gifts.json", 0.0, logger)
+    gift = _gift(10)
+    stored = await store.add(gift)
+
+    assert stored is store.get(10)
+    assert stored.announce_pending is True
+
+    await store.set_message_ids(10, sticker_message_id=5)
+
+    assert stored.announce_pending is True  # the text has not landed yet
+
+    await store.set_message_ids(10, message_id=6)
+
+    assert stored.announce_pending is False
+
+
+async def test_replace_all_leaves_nothing_pending(tmp_path, logger):
+    """`--save-only` must not arm an announcement for the whole catalog."""
+    store = StarGiftsStore(tmp_path / "star_gifts.json", 0.0, logger)
+
+    await store.replace_all([_gift(10), _gift(20)])
+
+    assert [gift.announce_pending for gift in store.snapshot()] == [False, False]
+
+
+async def test_upgrade_candidates_skips_gifts_already_known_upgradable(
+    tmp_path, logger
+):
+    store = StarGiftsStore(tmp_path / "star_gifts.json", 0.0, logger)
+
+    await store.replace_all([_gift(10), _gift(20, is_upgradable=True)])
+
+    assert [gift.id for gift in store.upgrade_candidates()] == [10]
+
+
+async def test_upgrade_stars_is_merged_from_the_live_payload(tmp_path, logger):
+    """The cooldown filter reads `upgrade_stars`, so it must track the catalog."""
+    store = StarGiftsStore(tmp_path / "star_gifts.json", 0.0, logger)
+
+    await store.add(_gift(10, upgrade_stars=None))
+    await store.flush()
+
+    assert await store.apply_live_many([_gift(10, upgrade_stars=25)]) == []
+
+    gift = store.get(10)
+
+    assert gift is not None
+    assert gift.upgrade_stars == 25
+    assert store.is_dirty is True
+
+
+async def test_upgrade_sticker_id_is_persisted_separately(tmp_path, logger):
+    store = StarGiftsStore(tmp_path / "star_gifts.json", 0.0, logger)
+
+    await store.add(_gift(10, sticker_message_id=1))
+    await store.set_message_ids(10, upgrade_sticker_message_id=9)
+
+    gift = store.get(10)
+
+    assert gift is not None
+    assert gift.sticker_message_id == 1
+    assert gift.upgrade_sticker_message_id == 9
 
 
 async def test_flush_writes_immediately(tmp_path, logger):
