@@ -1,7 +1,10 @@
 import asyncio
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from datetime import datetime
+from io import BytesIO
 from logging import Logger
+from typing import cast
 
 from telethon import TelegramClient, errors
 from telethon.tl import functions, types
@@ -62,6 +65,57 @@ async def resolve_peer(
             raise RuntimeError(
                 f"Userbot cannot resolve chat {chat_id}; join the chat first"
             ) from ex
+
+
+def _filename(document: types.Document) -> str:
+    for attr in document.attributes:
+        if isinstance(attr, types.DocumentAttributeFilename):
+            return attr.file_name
+
+    return f"{document.id}{constants.STICKER_SUFFIX}"
+
+
+async def send_gift_sticker(
+    client: TelegramClient,
+    peer: types.TypeInputPeer,
+    document: types.Document,
+) -> types.Message:
+    """Post a gift sticker by re-uploading its bytes.
+
+    A gift's `sticker` is a *custom emoji* document (it carries
+    `DocumentAttributeCustomEmoji`), and Telegram rejects those as message media
+    with `DOCUMENT_INVALID`, so the document cannot simply be forwarded by
+    reference. Downloading and re-uploading the bytes under the document's own
+    mime type reproduces exactly what the pyrogram deployment posted: an
+    `application/x-tgsticker` document with image-size and filename attributes.
+    """
+    # Telethon's hints cover neither documented case used here: a bare
+    # `Document` as the source, and `file=bytes` asking for the bytes back.
+    download = cast(
+        "Callable[[types.Document, type[bytes]], Awaitable[bytes | None]]",
+        client.download_media,
+    )
+    data = await download(document, bytes)
+
+    if data is None:
+        msg = f"Sticker document {document.id} has nothing to download"
+
+        raise RuntimeError(msg)
+
+    name = _filename(document)
+    stream = BytesIO(data)
+    stream.name = name
+
+    return cast(
+        "types.Message",
+        await client.send_file(
+            peer,
+            stream,
+            mime_type=document.mime_type,
+            attributes=[types.DocumentAttributeFilename(name)],
+            force_document=False,
+        ),
+    )
 
 
 def _timestamp(value: datetime | None) -> int | None:

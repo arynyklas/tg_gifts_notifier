@@ -1,7 +1,6 @@
 import asyncio
 from logging import Logger
 import math
-from typing import cast
 from zoneinfo import ZoneInfo
 
 from telethon import TelegramClient, errors
@@ -12,6 +11,7 @@ from src.bot_api import BotApiClient, BotApiError
 from src.config import Config
 from src.models import StarGiftData
 from src.store import StarGiftsStore
+from src.userbot import send_gift_sticker
 
 
 class Notifier:
@@ -139,9 +139,8 @@ class Notifier:
         """
         try:
             if gift.sticker_message_id is None and sticker is not None:
-                message = cast(
-                    types.Message,
-                    await self._client.send_file(self._notify_peer, sticker),
+                message = await send_gift_sticker(
+                    self._client, self._notify_peer, sticker
                 )
 
                 await self._store.set_message_ids(
@@ -219,9 +218,7 @@ class Notifier:
                 )
 
             else:
-                message = cast(
-                    types.Message, await self._client.send_file(peer, sticker)
-                )
+                message = await send_gift_sticker(self._client, peer, sticker)
                 sticker_message_id = message.id
 
                 await asyncio.sleep(self._notifications.after_sticker_delay)

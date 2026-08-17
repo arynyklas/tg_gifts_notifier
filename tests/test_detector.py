@@ -1,4 +1,5 @@
 from datetime import UTC, datetime
+from io import BytesIO
 from time import monotonic
 from typing import Any, cast
 
@@ -60,7 +61,8 @@ class FakeClient:
 
     def __init__(self, payloads: list[list[types.TypeStarGift]]) -> None:
         self._payloads = payloads
-        self.sent_stickers: list[tuple[object, types.Document]] = []
+        self.sent_stickers: list[dict[str, object]] = []
+        self.downloads: list[int] = []
         self.requests: list[object] = []
         self.upgradable: set[int] = set()
         self.upgrade_errors: dict[int, BaseException] = {}
@@ -105,8 +107,34 @@ class FakeClient:
 
         raise AssertionError(f"unexpected request {request!r}")
 
-    async def send_file(self, entity: object, file: types.Document) -> FakeMessage:
-        self.sent_stickers.append((entity, file))
+    async def download_media(
+        self, document: types.Document, file: type[bytes]
+    ) -> bytes:
+        assert file is bytes
+
+        self.downloads.append(document.id)
+
+        return f"tgs-bytes-of-{document.id}".encode()
+
+    async def send_file(
+        self,
+        entity: object,
+        file: BytesIO,
+        *,
+        mime_type: str,
+        attributes: list[types.TypeDocumentAttribute],
+        force_document: bool,
+    ) -> FakeMessage:
+        self.sent_stickers.append(
+            {
+                "entity": entity,
+                "payload": file.read(),
+                "name": file.name,
+                "mime_type": mime_type,
+                "attributes": attributes,
+                "force_document": force_document,
+            }
+        )
         self._next_message_id += 1
 
         return FakeMessage(self._next_message_id)
@@ -186,6 +214,36 @@ def first_payload() -> list[types.TypeStarGift]:
         _star_gift(GIFT_LIMITED_ID, limited=True, remains=40, total=100),
         _star_gift(GIFT_REGULAR_ID, limited=False),
     ]
+
+
+async def test_stickers_are_reuploaded_the_way_production_posts_them(
+    config, logger, tmp_path, first_payload
+):
+    """Gift stickers are custom emoji documents: sending them by reference fails.
+
+    The bytes are downloaded and re-uploaded instead, and the resulting message
+    must match what the pyrogram deployment posted in `@gifts_detector`: an
+    `application/x-tgsticker` upload carrying only a filename attribute.
+    """
+    detector, client, _, _ = _build(config, logger, tmp_path, [first_payload])
+
+    assert await detector.poll_once() is True
+
+    assert client.downloads == [GIFT_REGULAR_ID, GIFT_LIMITED_ID]
+
+    for gift_id, upload in zip(
+        (GIFT_REGULAR_ID, GIFT_LIMITED_ID), client.sent_stickers, strict=True
+    ):
+        attributes = cast(list[types.TypeDocumentAttribute], upload["attributes"])
+
+        assert upload["payload"] == f"tgs-bytes-of-{gift_id}".encode()
+        assert upload["mime_type"] == "application/x-tgsticker"
+        assert upload["force_document"] is False
+        assert upload["name"] == f"{gift_id}.tgs"
+        assert [type(attr) for attr in attributes] == [types.DocumentAttributeFilename]
+        assert cast(types.DocumentAttributeFilename, attributes[0]).file_name == (
+            f"{gift_id}.tgs"
+        )
 
 
 async def test_first_poll_announces_every_new_gift(
