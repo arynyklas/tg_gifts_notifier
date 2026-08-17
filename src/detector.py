@@ -5,10 +5,17 @@ from time import monotonic
 from telethon import TelegramClient, errors
 from telethon.tl import types
 
+from src import constants
 from src.config import Config
 from src.notifier import Notifier
 from src.store import StarGiftsStore
-from src.userbot import ParsedGift, fetch_star_gifts, probe_upgradable
+from src.userbot import (
+    AUTH_ERRORS,
+    AuthorizationLostError,
+    ParsedGift,
+    fetch_star_gifts,
+    probe_upgradable,
+)
 
 
 class Detector:
@@ -20,24 +27,21 @@ class Detector:
         cfg: Config,
         logger: Logger,
         *,
-        track_updates: bool,
         check_upgrades: bool,
     ) -> None:
         self._client = client
         self._notifier = notifier
         self._store = store
-        self._cfg = cfg
         self._detector_cfg = cfg.detector
         self._logger = logger
-        self._track_updates = track_updates
         self._check_upgrades = check_upgrades
 
-        self._hash = 0
         self._stickers: dict[int, types.Document] = {}
         self._pending_updates: dict[int, int] = {}
         self._updates_event = asyncio.Event()
         self._retry_at: dict[int, float] = {}
         self._retry_delay: dict[int, float] = {}
+        self._probed_at: dict[int, float] = {}
         self._upgrade_slots = asyncio.Semaphore(cfg.detector.upgrades_check_concurrency)
 
     def sticker_for(self, gift_id: int) -> types.Document | None:
@@ -47,6 +51,9 @@ class Detector:
         while True:
             try:
                 await self.poll_once()
+
+            except AUTH_ERRORS as ex:
+                raise AuthorizationLostError(str(ex)) from ex
 
             except errors.FloodWaitError as ex:
                 self._logger.warning("FLOOD_WAIT %ds while polling gifts", ex.seconds)
@@ -65,6 +72,9 @@ class Detector:
             try:
                 await self.drain_updates_once()
 
+            except AUTH_ERRORS as ex:
+                raise AuthorizationLostError(str(ex)) from ex
+
             except (errors.RPCError, OSError):
                 self._logger.exception("Update batch failed")
 
@@ -74,6 +84,9 @@ class Detector:
         while True:
             try:
                 await self.check_upgrades_once()
+
+            except AUTH_ERRORS as ex:
+                raise AuthorizationLostError(str(ex)) from ex
 
             except errors.FloodWaitError as ex:
                 self._logger.warning(
@@ -91,9 +104,7 @@ class Detector:
 
     async def poll_once(self) -> bool:
         """One catalog poll. Returns whether a fresh payload was processed."""
-        gifts_hash, parsed = await fetch_star_gifts(
-            self._client, self._hash, self._logger
-        )
+        parsed = await fetch_star_gifts(self._client, self._logger)
 
         if parsed is None:
             self._logger.debug("Star gifts data not modified")
@@ -106,11 +117,6 @@ class Detector:
             for gift_id, gift in parsed.items()
             if gift.sticker is not None
         }
-
-        if not self._track_updates:
-            # Full payloads are required to observe stock changes, so the hash
-            # is only cached when nothing tracks updates.
-            self._hash = gifts_hash
 
         await self._announce_new(parsed)
         await self._retry_announcements()
@@ -136,6 +142,11 @@ class Detector:
 
         for gift, previous in items:
             if not await self._notifier.edit_gift_text(gift):
+                # A transient failure must not drop the stock number: the batch
+                # is re-armed with the oldest known previous value.
+                self._pending_updates.setdefault(gift.id, previous)
+                self._updates_event.set()
+
                 continue
 
             edited += 1
@@ -160,10 +171,17 @@ class Detector:
         if not self._check_upgrades:
             return 0
 
-        candidates = [gift for gift in self._store.gifts() if not gift.is_upgradable]
+        now = monotonic()
+        candidates = [
+            gift
+            for gift in self._store.upgrade_candidates()
+            if gift.upgrade_stars is not None
+            or now - self._probed_at.get(gift.id, 0.0)
+            >= constants.NEGATIVE_PROBE_COOLDOWN
+        ]
 
         if not candidates:
-            self._logger.debug("No non-upgradable gifts to check")
+            self._logger.debug("No upgrade candidates due")
 
             return 0
 
@@ -173,6 +191,11 @@ class Detector:
             self._upgrade_slots,
             self._logger,
         )
+        upgradable_ids = set(upgradable)
+
+        for gift in candidates:
+            if gift.id not in upgradable_ids:
+                self._probed_at[gift.id] = now
 
         announced = 0
 
@@ -214,13 +237,13 @@ class Detector:
         )
 
         for gift in new_gifts:
-            await self._store.add(gift.data)
+            stored = await self._store.add(gift.data)
 
-            if await self._notifier.announce_new_gift(gift.data, gift.sticker):
-                self._clear_retry(gift.data.id)
+            if await self._notifier.announce_new_gift(stored, gift.sticker):
+                self._clear_retry(stored.id)
 
             else:
-                self._schedule_retry(gift.data.id)
+                self._schedule_retry(stored.id)
 
     async def _retry_announcements(self) -> None:
         if not self._retry_at:
@@ -247,9 +270,6 @@ class Detector:
     async def _apply_live(self, parsed: dict[int, ParsedGift]) -> None:
         drops = await self._store.apply_live_many(gift.data for gift in parsed.values())
 
-        if not self._track_updates:
-            return
-
         for stored, previous_available in drops:
             if stored.message_id is None:
                 continue
@@ -265,6 +285,17 @@ class Detector:
 
         self._retry_at[gift_id] = monotonic() + delay
         self._retry_delay[gift_id] = delay
+
+    def seed_pending_announcements(self) -> int:
+        """Re-arm announcements interrupted by a crash. Returns how many."""
+        now = monotonic()
+
+        for gift in self._store.gifts():
+            if gift.announce_pending and gift.message_id is None:
+                self._retry_at[gift.id] = now
+                self._retry_delay[gift.id] = 0.0
+
+        return len(self._retry_at)
 
     def _clear_retry(self, gift_id: int) -> None:
         self._retry_at.pop(gift_id, None)
@@ -283,7 +314,7 @@ async def baseline_upgradability(
     and the first upgrades cycle announces the entire existing catalog — 118 of
     149 gifts were already upgradable when this was written.
     """
-    candidates = [gift.id for gift in store.gifts() if not gift.is_upgradable]
+    candidates = [gift.id for gift in store.upgrade_candidates()]
 
     if not candidates:
         return 0

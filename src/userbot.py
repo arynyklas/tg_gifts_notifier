@@ -7,11 +7,25 @@ from logging import Logger
 from typing import cast
 
 from telethon import TelegramClient, errors
+from telethon.errors import common
 from telethon.tl import functions, types
 
 from src import constants, utils
 from src.config import TelegramConfig
 from src.models import StarGiftData
+
+
+class AuthorizationLostError(Exception):
+    """The session can no longer be used; the process must stop."""
+
+
+# UnauthorizedError/AuthKeyError are RPCError subclasses, so every generic
+# `except RPCError` retry loop would otherwise swallow a revoked session.
+AUTH_ERRORS: tuple[type[BaseException], ...] = (
+    errors.UnauthorizedError,
+    errors.AuthKeyError,
+    common.AuthKeyNotFound,
+)
 
 
 @dataclass(frozen=True, slots=True)
@@ -32,10 +46,15 @@ def build_client(
     then wraps every request in `InvokeWithoutUpdatesRequest`. QR login is the
     exception — it completes only when the `UpdateLoginToken` update arrives,
     so that path must ask for updates explicitly.
+
+    The session file is full account access with no 2FA prompt, so it and its
+    directory are narrowed to the owner. `Path.chmod` is a documented no-op for
+    the group and other bits on Windows, so no platform guard is needed.
     """
     cfg.session_path.parent.mkdir(parents=True, exist_ok=True)
+    cfg.session_path.parent.chmod(0o700)
 
-    return TelegramClient(
+    client = TelegramClient(
         str(cfg.session_path),
         cfg.api_id,
         cfg.api_hash,
@@ -45,6 +64,11 @@ def build_client(
         # `get_logger` levels separately from ours.
         base_logger=f"{logger.name}.{constants.TELETHON_LOGGER_CHILD}",
     )
+
+    if cfg.session_path.exists():
+        cfg.session_path.chmod(0o600)
+
+    return client
 
 
 async def resolve_peer(
@@ -143,30 +167,33 @@ def _parse_gift(raw: types.StarGift, number: int, logger: Logger) -> ParsedGift:
                 _timestamp(raw.first_sale_date) or utils.current_timestamp()
             ),
             last_sale_timestamp=_timestamp(raw.last_sale_date),
+            upgrade_stars=raw.upgrade_stars,
         ),
         sticker=sticker,
     )
 
 
 async def fetch_star_gifts(
-    client: TelegramClient,
-    gifts_hash: int,
-    logger: Logger,
-) -> tuple[int, dict[int, ParsedGift] | None]:
-    """Fetch the gift catalog; `None` gifts mean the payload was not modified."""
-    result = await client(functions.payments.GetStarGiftsRequest(hash=gifts_hash))
+    client: TelegramClient, logger: Logger
+) -> dict[int, ParsedGift] | None:
+    """Fetch the gift catalog; `None` means Telegram reported it unmodified.
+
+    The hash is always `0` because stock changes are only observable in a full
+    payload, so a cached hash would suppress exactly the updates this tool
+    exists to report. `StarGiftsNotModified` is still part of the response
+    union, so the branch stays.
+    """
+    result = await client(functions.payments.GetStarGiftsRequest(hash=0))
 
     if isinstance(result, types.payments.StarGiftsNotModified):
-        return gifts_hash, None
+        return None
 
     catalog = [gift for gift in result.gifts if isinstance(gift, types.StarGift)]
 
-    parsed = {
+    return {
         raw.id: _parse_gift(raw, number, logger)
         for number, raw in enumerate(sorted(catalog, key=lambda gift: gift.id), 1)
     }
-
-    return result.hash, parsed
 
 
 async def is_gift_upgradable(
@@ -210,7 +237,9 @@ async def probe_upgradable(
     """Probe many gifts concurrently; return the ids that are upgradable.
 
     A failed probe is logged and treated as "not upgradable" so one bad gift
-    cannot sink the batch; `slots` bounds how many probes are in flight.
+    cannot sink the batch; `slots` bounds how many probes are in flight. An auth
+    failure and a hard flood wait are re-raised instead: the first must stop the
+    process, and absorbing the second re-probed the whole set on the next tick.
     """
 
     async def probe(gift_id: int) -> bool:
@@ -223,6 +252,9 @@ async def probe_upgradable(
     upgradable: list[int] = []
 
     for gift_id, result in zip(gift_ids, results, strict=True):
+        if isinstance(result, (*AUTH_ERRORS, errors.FloodWaitError)):
+            raise result
+
         if isinstance(result, BaseException):
             logger.error(
                 "Failed to check upgradability of gift %d", gift_id, exc_info=result
