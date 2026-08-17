@@ -1,6 +1,8 @@
 import argparse
 import asyncio
 from collections.abc import Callable, Coroutine
+from datetime import UTC, datetime
+from getpass import getpass
 from logging import Logger
 from pathlib import Path
 import signal
@@ -10,7 +12,8 @@ from typing import Any, cast
 from zoneinfo import ZoneInfo
 
 from pydantic import ValidationError
-from telethon import TelegramClient
+import qrcode
+from telethon import TelegramClient, errors
 import yaml
 
 from src import constants, utils
@@ -27,6 +30,10 @@ _EXIT_CONFIG = 1
 _EXIT_UNAUTHORIZED = 2
 _HEALTHY_UPTIME = 60.0
 _MAX_RESTART_DELAY = 60.0
+_LOGIN_PHONE = "phone"
+_LOGIN_QR = "qr"
+_QR_MAX_ROUNDS = 6
+_QR_BORDER = 2
 
 
 def _build_parser() -> argparse.ArgumentParser:
@@ -46,8 +53,15 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument(
         "--login",
-        action="store_true",
-        help="interactively authorize the userbot session and exit",
+        nargs="?",
+        const=_LOGIN_PHONE,
+        choices=(_LOGIN_PHONE, _LOGIN_QR),
+        default=None,
+        help=(
+            "authorize the userbot session and exit; "
+            f"'{_LOGIN_PHONE}' (default) prompts for phone and code, "
+            f"'{_LOGIN_QR}' prints a QR code to scan from an authorized device"
+        ),
     )
 
     return parser
@@ -100,21 +114,96 @@ def _install_signal_handlers(stop: asyncio.Event, logger: Logger) -> None:
             signal.signal(sig, _handle)
 
 
-async def _login(client: TelegramClient, logger: Logger) -> int:
+def _describe(user: object) -> object:
+    return getattr(user, "username", None) or getattr(user, "id", user)
+
+
+def _seconds_until(expires: datetime | None) -> float:
+    if expires is None:
+        return 0.0
+
+    return max((expires - datetime.now(tz=UTC)).total_seconds(), 0.0)
+
+
+def _print_qr(url: str) -> None:
+    code = qrcode.QRCode(border=_QR_BORDER)
+
+    code.add_data(url)
+    # `invert=True` puts the light modules on the terminal background, which is
+    # the polarity QR readers expect on a dark terminal.
+    code.print_ascii(invert=True)
+
+
+async def _login(client: TelegramClient, logger: Logger, mode: str) -> int:
+    if mode == _LOGIN_QR:
+        return await _login_qr(client, logger)
+
+    return await _login_phone(client, logger)
+
+
+async def _login_phone(client: TelegramClient, logger: Logger) -> int:
     # `start()` returns a coroutine when awaited from async code; the stub says otherwise.
     await cast("Coroutine[Any, Any, None]", client.start())
 
     try:
-        me = await client.get_me()
-
-        logger.info(
-            "Authorized as %s", getattr(me, "username", None) or getattr(me, "id", me)
-        )
+        logger.info("Authorized as %s", _describe(await client.get_me()))
 
     finally:
         await client.disconnect()
 
     return _EXIT_OK
+
+
+async def _login_qr(client: TelegramClient, logger: Logger) -> int:
+    await client.connect()
+
+    try:
+        if await client.is_user_authorized():
+            logger.info(
+                "Session is already authorized as %s", _describe(await client.get_me())
+            )
+
+            return _EXIT_OK
+
+        qr = await client.qr_login()
+
+        for round_index in range(1, _QR_MAX_ROUNDS + 1):
+            _print_qr(qr.url)
+
+            print(
+                "Scan the code above in Telegram: Settings -> Devices -> Link Desktop Device.\n"
+                f"Or open this link on an already authorized device: {qr.url}\n"
+                f"Waiting for the scan; code {round_index}/{_QR_MAX_ROUNDS} "
+                f"is valid for {_seconds_until(qr.expires):.0f}s..."
+            )
+
+            try:
+                user = await qr.wait()
+
+            except TimeoutError:
+                logger.warning(
+                    "QR code expired before it was scanned, generating a new one"
+                )
+
+                await qr.recreate()
+
+                continue
+
+            except errors.SessionPasswordNeededError:
+                user = await client.sign_in(
+                    password=getpass("Two-step verification password: ")
+                )
+
+            logger.info("Authorized as %s", _describe(user))
+
+            return _EXIT_OK
+
+        logger.error("QR login did not complete after %d codes", _QR_MAX_ROUNDS)
+
+        return _EXIT_CONFIG
+
+    finally:
+        await client.disconnect()
 
 
 async def _save_only(
@@ -271,6 +360,28 @@ async def _run(args: argparse.Namespace, cfg: Config, logger: Logger) -> int:
         await client.disconnect()
 
 
+async def _run_login(mode: str, cfg: Config, logger: Logger) -> int:
+    client = build_client(
+        cfg.telegram,
+        logger,
+        # QR login completes only when the `UpdateLoginToken` update arrives.
+        receive_updates=mode == _LOGIN_QR,
+    )
+
+    try:
+        return await _login(client, logger, mode)
+
+    except errors.RPCError as ex:
+        logger.critical("Login rejected by Telegram: %s", ex)
+
+        return _EXIT_CONFIG
+
+    except EOFError:  # stdin is not a terminal
+        logger.critical("Login needs an interactive terminal")
+
+        return _EXIT_CONFIG
+
+
 async def main() -> int:
     args = _build_parser().parse_args()
 
@@ -289,8 +400,8 @@ async def main() -> int:
 
     logger = get_logger(constants.LOGGER_NAME, cfg.logging)
 
-    if args.login:
-        return await _login(build_client(cfg.telegram, logger), logger)
+    if args.login is not None:
+        return await _run_login(args.login, cfg, logger)
 
     try:
         return await _run(args, cfg, logger)

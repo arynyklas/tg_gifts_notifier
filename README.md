@@ -52,7 +52,13 @@ A userbot (Telethon, MTProto layer 227) polls `payments.getStarGifts`; the confi
     uv run python scripts/convert_pyrogram_session.py account.session sessions/userbot.session
     ```
 
-    or by logging in interactively:
+    by scanning a QR code from an already authorized device (Telegram → Settings → Devices → Link Desktop Device):
+
+    ```sh
+    uv run python -m src.main --login qr
+    ```
+
+    or by entering a phone number and login code:
 
     ```sh
     uv run python -m src.main --login
@@ -115,6 +121,7 @@ uv run pytest
 | `notifications.timezone` | String | Timezone of the rendered timestamps (e.g. `Europe/Moscow`) |
 | `logging.console_level` | String or Integer | Console log level (e.g. `DEBUG`) |
 | `logging.file_level` | String or Integer | File log level |
+| `logging.telethon_level` | String or Integer | Level for Telethon's own loggers, kept separate from ours (default `WARNING`; raise to `DEBUG` to debug MTProto) |
 | `logging.filepath` | String | Log file path |
 | `logging.max_bytes` | Integer | Size at which the log file is rotated |
 | `logging.backup_count` | Integer | Number of rotated log files kept |

@@ -12,6 +12,7 @@ dependencies = [
     "pyyaml>=6.0.3",
     "niquests>=3.21.0",
     "tzdata>=2025.2",
+    "qrcode>=8.2",
 ]
 
 [dependency-groups]

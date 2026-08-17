@@ -80,6 +80,8 @@ class NotificationsConfig(_Base):
 class LoggingConfig(_Base):
     console_level: LogLevel = logging.INFO
     file_level: LogLevel = logging.INFO
+    # Telethon is chatty at DEBUG; keep it out of our own DEBUG stream by default.
+    telethon_level: LogLevel = logging.WARNING
     filepath: Path = Path("logs/main.log")
     max_bytes: int = 10 * 1024 * 1024
     backup_count: int = 5

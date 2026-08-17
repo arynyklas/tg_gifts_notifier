@@ -44,4 +44,10 @@ def get_logger(name: str, cfg: LoggingConfig) -> logging.Logger:
     logger.addHandler(console_handler)
     logger.addHandler(file_handler)
 
+    # Telethon logs through children of this logger (see `build_client`); clamping
+    # the shared parent keeps its DEBUG firehose out of ours without losing it.
+    logging.getLogger(f"{name}.{constants.TELETHON_LOGGER_CHILD}").setLevel(
+        cfg.telethon_level
+    )
+
     return logger

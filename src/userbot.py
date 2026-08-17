@@ -6,7 +6,7 @@ from logging import Logger
 from telethon import TelegramClient, errors
 from telethon.tl import functions, types
 
-from src import utils
+from src import constants, utils
 from src.config import TelegramConfig
 from src.models import StarGiftData
 
@@ -17,7 +17,19 @@ class ParsedGift:
     sticker: types.Document | None
 
 
-def build_client(cfg: TelegramConfig, logger: Logger) -> TelegramClient:
+def build_client(
+    cfg: TelegramConfig,
+    logger: Logger,
+    *,
+    receive_updates: bool = False,
+) -> TelegramClient:
+    """Build the userbot client.
+
+    The notifier never handles updates, so they are off by default: Telethon
+    then wraps every request in `InvokeWithoutUpdatesRequest`. QR login is the
+    exception — it completes only when the `UpdateLoginToken` update arrives,
+    so that path must ask for updates explicitly.
+    """
     cfg.session_path.parent.mkdir(parents=True, exist_ok=True)
 
     return TelegramClient(
@@ -25,8 +37,10 @@ def build_client(cfg: TelegramConfig, logger: Logger) -> TelegramClient:
         cfg.api_id,
         cfg.api_hash,
         flood_sleep_threshold=cfg.flood_sleep_threshold,
-        receive_updates=False,  # the notifier never handles updates
-        base_logger=logger.name,
+        receive_updates=receive_updates,
+        # Telethon's own loggers become children of this name, which
+        # `get_logger` levels separately from ours.
+        base_logger=f"{logger.name}.{constants.TELETHON_LOGGER_CHILD}",
     )
 
 
