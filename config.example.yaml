@@ -1,0 +1,60 @@
+telegram:
+  api_id: 1234
+  api_hash: "1234"
+  session_path: sessions/userbot.session
+  flood_sleep_threshold: 60
+  bot_tokens:
+    - "1234:abcd"
+    - "2345:bcda"
+    - "3456:cdef"
+  bot_api_base_url: https://api.telegram.org
+  request_timeout: 20.0
+
+detector:
+  check_interval: 1.0
+  updates_batch_delay: 1.0
+  check_upgrades_interval: 2.0
+  upgrades_check_concurrency: 4
+  announce_retry_max_delay: 60.0
+
+storage:
+  data_filepath: star_gifts.json
+  save_debounce: 2.0
+
+notifications:
+  chat_id: -1002452764624  # https://t.me/gifts_detector
+  # If you don't need upgrades, set `upgrades_chat_id` to `null`.
+  # Additionally, bots can't check upgrades for gifts,
+  # Telegram will raise [400 BOT_METHOD_INVALID]
+  upgrades_chat_id: -1002751596218  # https://t.me/gifts_upgrades_detector
+  after_sticker_delay: 1.0
+  after_text_delay: 2.0
+  timezone: UTC
+
+logging:
+  console_level: DEBUG
+  file_level: INFO
+  filepath: logs/main.log
+  max_bytes: 10485760
+  backup_count: 5
+
+texts:
+  notify: |
+    {title}
+
+    № {number} (<code>{id}</code>)
+    {total_amount}{available_amount}{sold_out}
+    💎 Price: {price} ⭐️
+    ♻️ Convert price: {convert_price} ⭐️
+    {require_premium_or_user_limited}
+  title_limited: "🔥 A new limited gift has appeared"
+  title_regular: "❄️ A new gift has appeared"
+  total_amount: "\n🎯 Total amount: {total_amount}"
+  available_amount: "\n❓ Available amount: {available_amount} ({same_str}{available_percentage}%, updated at {updated_datetime} UTC)\n"
+  sold_out: "\n⏰ Completely sold out in {sold_out}\n"
+  require_premium_or_user_limited: "\n{emoji} {require_premium}{separator}{user_limited}\n"
+  require_premium_or_user_limited_emoji: "✨"
+  require_premium: "<b>Premium only</b>"
+  user_limited: "<b>{user_limited} per user</b>"
+  require_premium_and_user_limited_separator: " | "
+  upgrades: "Gift is upgradable! (<code>{id}</code>)"
