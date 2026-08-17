@@ -1,6 +1,7 @@
 import asyncio
 import itertools
 from logging import Logger
+import re
 from typing import Any
 
 import certifi
@@ -21,6 +22,13 @@ _TOO_MANY_REQUESTS = 429
 # It must be passed per request: `AsyncSession(verify=...)` and `session.verify`
 # are both overridden by the `verify=True` default of every request method.
 _CA_BUNDLE = certifi.where()
+# A niquests exception stringifies the request path, and the path carries the
+# bot token; nothing derived from one may reach a log record un-redacted.
+_TOKEN_PATH = re.compile(r"/bot[^/\s]+/")
+
+
+def _redact(text: str) -> str:
+    return _TOKEN_PATH.sub("/bot<redacted>/", text)
 
 
 class BotApiError(Exception):
@@ -99,17 +107,14 @@ class BotApiClient:
                     )
                 ).json()
 
-            except (
-                niquests_errors.Timeout,
-                niquests_errors.ConnectionError,
-                niquests_errors.JSONDecodeError,
-            ) as ex:
+            except niquests_errors.RequestException as ex:
                 self._logger.warning(
-                    "Bot API %s failed at transport level (attempt %d/%d): %s",
+                    "Bot API %s failed at transport level (attempt %d/%d): %s: %s",
                     method,
                     attempt,
                     attempts,
-                    ex,
+                    type(ex).__name__,
+                    _redact(str(ex)),
                 )
 
                 continue

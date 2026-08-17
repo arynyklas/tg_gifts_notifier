@@ -1,12 +1,16 @@
 from collections.abc import Callable, Iterator
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import json
+import logging
 import threading
+from types import SimpleNamespace
 
 import certifi
+from niquests import exceptions as niquests_errors
 import pytest
 
-from src.bot_api import BotApiClient, BotApiError
+from src import bot_api
+from src.bot_api import BotApiClient, BotApiError, _redact
 from src.config import Config, TelegramConfig
 
 Responder = Callable[[str, dict], tuple[int, object]]
@@ -121,7 +125,30 @@ async def test_send_message_returns_the_message_id(serve):
     }
 
 
-async def test_rate_limit_rotates_tokens_and_honours_retry_after(serve):
+def _record_sleeps(monkeypatch) -> list[float]:
+    """Capture `bot_api`'s sleeps without touching the global `asyncio.sleep`.
+
+    Patching `src.bot_api.asyncio.sleep` would replace the attribute on the
+    asyncio module itself, which deadlocks niquests and the test HTTP server.
+    `bot_api` uses `asyncio` for nothing but the sleep, so the module reference
+    is swapped instead.
+    """
+    delays: list[float] = []
+
+    async def recorder(delay: float) -> None:
+        delays.append(delay)
+
+    monkeypatch.setattr(bot_api, "asyncio", SimpleNamespace(sleep=recorder))
+
+    return delays
+
+
+async def test_rate_limit_rotates_tokens_and_honours_retry_after(serve, monkeypatch):
+    """The retry_after must actually be slept through.
+
+    With `retry_after: 0` this test passed even with the `asyncio.sleep` deleted,
+    so the delay is recorded and asserted instead.
+    """
     state = {"calls": 0}
 
     def responder(path: str, body: dict) -> tuple[int, object]:
@@ -132,10 +159,12 @@ async def test_rate_limit_rotates_tokens_and_honours_retry_after(serve):
                 "ok": False,
                 "error_code": 429,
                 "description": "Too Many Requests",
-                "parameters": {"retry_after": 0},
+                "parameters": {"retry_after": 3},
             }
 
         return 200, {"ok": True, "result": {"message_id": 1}}
+
+    delays = _record_sleeps(monkeypatch)
 
     client = serve(responder)
 
@@ -149,6 +178,37 @@ async def test_rate_limit_rotates_tokens_and_honours_retry_after(serve):
 
     assert len(used) == 2
     assert used[0] != used[1]  # the rate-limited token is not reused immediately
+    assert delays == [3]
+
+
+async def test_rate_limit_without_parameters_falls_back_to_one_second(
+    serve, monkeypatch
+):
+    state = {"calls": 0}
+
+    def responder(path: str, body: dict) -> tuple[int, object]:
+        state["calls"] += 1
+
+        if state["calls"] == 1:
+            return 429, {
+                "ok": False,
+                "error_code": 429,
+                "description": "Too Many Requests",
+            }
+
+        return 200, {"ok": True, "result": {"message_id": 2}}
+
+    delays = _record_sleeps(monkeypatch)
+
+    client = serve(responder)
+
+    try:
+        assert await client.send_message(-100, "hello") == 2
+
+    finally:
+        await client.aclose()
+
+    assert delays == [1]
 
 
 async def test_deterministic_error_fails_without_burning_every_token(serve):
@@ -282,3 +342,86 @@ async def test_every_request_carries_the_certifi_bundle(serve, monkeypatch):
         await client.aclose()
 
     assert seen == [certifi.where()]
+
+
+class _Capture(logging.Handler):
+    def __init__(self) -> None:
+        super().__init__(level=logging.DEBUG)
+
+        self.records: list[logging.LogRecord] = []
+
+    def emit(self, record: logging.LogRecord) -> None:
+        self.records.append(record)
+
+
+async def test_transport_failures_never_log_the_bot_token(config: Config):
+    """The request path carries the token, and niquests puts the path in `str(ex)`.
+
+    Logging the exception verbatim wrote a live token into `logs/main.log` on
+    every DNS failure, refused connection, TLS failure and read timeout.
+    """
+    token = "123456789:AAFAKE_SECRET"
+    capture = _Capture()
+    logger = logging.getLogger("tests.bot_api.redaction")
+
+    logger.handlers.clear()
+    logger.addHandler(capture)
+    logger.setLevel(logging.DEBUG)
+    logger.propagate = False
+
+    telegram = TelegramConfig.model_validate(
+        config.telegram.model_dump()
+        | {
+            "bot_tokens": [token],
+            "bot_api_base_url": "https://127.0.0.1:9",
+            "request_timeout": 2.0,
+        }
+    )
+    client = BotApiClient(telegram, logger)
+
+    try:
+        with pytest.raises(BotApiError):
+            await client.send_message(-100, "hello")
+
+    finally:
+        await client.aclose()
+        logger.removeHandler(capture)
+
+    messages = [record.getMessage() for record in capture.records]
+
+    assert messages
+    assert not [message for message in messages if token in message]
+    assert [message for message in messages if "/bot<redacted>/" in message]
+
+
+def test_every_niquests_exception_is_caught_by_the_single_handler():
+    """`_request` catches `RequestException` alone, so nothing tainted escapes.
+
+    The old triple let `RetryError`, `SSLError`, `InvalidURL` and friends through
+    into the notifier's `except OSError`, which logged the tainted traceback.
+    """
+    assert issubclass(niquests_errors.RequestException, OSError)
+
+    for name in (
+        "Timeout",
+        "ConnectionError",
+        "JSONDecodeError",
+        "RetryError",
+        "InvalidURL",
+        "TooManyRedirects",
+        "ChunkedEncodingError",
+        "SSLError",
+        "ProxyError",
+    ):
+        assert issubclass(
+            getattr(niquests_errors, name), niquests_errors.RequestException
+        )
+
+
+def test_redact_leaves_everything_but_the_token():
+    assert (
+        _redact(
+            "Max retries exceeded with url: /bot123:SECRET/sendMessage (Caused by X)"
+        )
+        == "Max retries exceeded with url: /bot<redacted>/sendMessage (Caused by X)"
+    )
