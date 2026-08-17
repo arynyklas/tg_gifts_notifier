@@ -86,17 +86,22 @@ It also records which of those gifts are already upgradable, so the first upgrad
 
 Use `--config path/to/config.yaml` to run against a different config file.
 
-Exit codes: `0` clean shutdown, `1` configuration or startup failure, `2` session not authorized.
+Exit codes: `0` clean shutdown, `1` configuration or startup failure, `2` session not authorized or authorization lost while running.
+
+An announcement interrupted by a crash or a Ctrl+C — the gift was stored but its message was never sent — is re-sent on the next start; the log reports `Re-announcing N gifts interrupted by an earlier run`.
 
 ## Development
 
 ```sh
 uv sync --group dev --group tests
-uv run ruff check src tests
-uv run ruff format src tests --check
+uv run ruff check src tests scripts
+uv run ruff format src tests scripts --check
 uv run ty check src tests
 uv run pytest
+uv lock --check
 ```
+
+CI runs the same commands. The type-check job is advisory: it is marked `continue-on-error` while `ty` is pre-1.0, so a green CI run does not mean the type check passed.
 
 ## Configuration
 
@@ -109,7 +114,7 @@ uv run pytest
 | `telegram.session_path` | String | Path of the Telethon session file (default `sessions/userbot.session`) |
 | `telegram.flood_sleep_threshold` | Integer | Flood waits shorter than this are slept through by Telethon (seconds) |
 | `telegram.bot_tokens` | [String] | Bot tokens from [BotFather](https://t.me/BotFather) used to send and edit messages; at least one is required |
-| `telegram.bot_api_base_url` | String | Bot API base URL (override for a local Bot API server) |
+| `telegram.bot_api_base_url` | String | Bot API base URL; must be `https`, or `http` only for a local Bot API server (`localhost`, `127.0.0.1`, `[::1]`) |
 | `telegram.request_timeout` | Float | Bot API request timeout in seconds |
 | `detector.check_interval` | Float | Delay between gift catalog polls (seconds) |
 | `detector.updates_batch_delay` | Float | Delay between batches of stock-update edits (seconds) |
@@ -137,14 +142,8 @@ Bots cannot check gift upgradability — Telegram answers `400 BOT_METHOD_INVALI
 
 An existing `star_gifts.json` is migrated in place on the first start: `version` is set to `2`, the dead `sticker_file_id` / `sticker_file_name` keys are dropped (sticker references are now refreshed from every poll instead of being persisted) and `sticker_message_id` is added so a retried announcement never posts a second sticker.
 
+A run that migrates the file also baselines upgradability before it announces anything, because the legacy schema had no `is_upgradable` field: it probes every stored gift once and records the result, logging `Marked N migrated gifts as already upgradable`. Without it the first upgrades cycle would announce the entire already-upgradable catalog.
+
 ## Contact
 
 For any questions or feedback, please contact me at [my socials](https://aryn.sek.su/).
-
----
-
-If you find TG Gifts Notifier useful and would like to support its development, consider making a donation. Your contributions help in maintaining and improving the project.
-
-You can donate via the following methods listed on this [site](https://aryn.sek.su/donates).
-
-Thank you for your support!
