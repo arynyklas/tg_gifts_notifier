@@ -29,6 +29,11 @@ DEFAULT_PORT = 443
 
 
 def convert(src: Path, dst: Path) -> int:
+    if dst.suffix != ".session":
+        # `SQLiteSession` appends the suffix itself, so the guard below has to
+        # check the path it will actually write, not the one given.
+        dst = dst.with_name(dst.name + ".session")
+
     if not src.is_file():
         print(f"Source session not found: {src}", file=sys.stderr)
 
@@ -65,6 +70,7 @@ def convert(src: Path, dst: Path) -> int:
         return 1
 
     dst.parent.mkdir(parents=True, exist_ok=True)
+    dst.parent.chmod(0o700)
 
     session = SQLiteSession(str(dst))
 
@@ -75,6 +81,9 @@ def convert(src: Path, dst: Path) -> int:
 
     finally:
         session.close()
+
+    # Full account access with no 2FA prompt; a no-op for group/other on Windows.
+    dst.chmod(0o600)
 
     print(f"Converted {src} -> {dst} (DC {dc_id}, test_mode={test_mode})")
 

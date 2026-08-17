@@ -1,21 +1,49 @@
+from collections.abc import Iterator
 import logging
+
+import pytest
 
 from src import constants
 from src.config import LoggingConfig
 from src.logger import get_logger
 
+_NAMES = (
+    "tests_logger_clamp",
+    "tests_logger_debug",
+    "tests_logger_idempotent",
+)
 
-def _fresh(name: str) -> None:
+
+@pytest.fixture(autouse=True)
+def _fresh() -> Iterator[None]:
+    """Close the file handlers these tests create, before and after each one.
+
+    A `RotatingFileHandler` left open on a `tmp_path` file makes pytest's
+    retention sweep fail to delete the directory on Windows.
+    """
+    _reset()
+
+    yield
+
+    _reset()
+
+
+def _reset() -> None:
     for logger_name in list(logging.root.manager.loggerDict):
-        if logger_name == name or logger_name.startswith(f"{name}."):
-            logging.getLogger(logger_name).handlers.clear()
-            logging.getLogger(logger_name).setLevel(logging.NOTSET)
+        if any(
+            logger_name == name or logger_name.startswith(f"{name}.") for name in _NAMES
+        ):
+            instance = logging.getLogger(logger_name)
+
+            for handler in instance.handlers:
+                handler.close()
+
+            instance.handlers.clear()
+            instance.setLevel(logging.NOTSET)
 
 
 def test_telethon_children_are_clamped_below_our_own_level(tmp_path):
     name = "tests_logger_clamp"
-
-    _fresh(name)
 
     logger = get_logger(
         name,
@@ -46,8 +74,6 @@ def test_telethon_children_are_clamped_below_our_own_level(tmp_path):
 def test_telethon_level_can_be_opened_up(tmp_path):
     name = "tests_logger_debug"
 
-    _fresh(name)
-
     get_logger(
         name,
         LoggingConfig.model_validate(
@@ -67,8 +93,6 @@ def test_telethon_level_can_be_opened_up(tmp_path):
 
 def test_repeated_calls_do_not_duplicate_handlers(tmp_path):
     name = "tests_logger_idempotent"
-
-    _fresh(name)
 
     cfg = LoggingConfig.model_validate({"filepath": tmp_path / "main.log"})
 

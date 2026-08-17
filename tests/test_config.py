@@ -59,3 +59,38 @@ def test_unknown_timezone_is_rejected(tmp_path):
 
     with pytest.raises(ValidationError):
         Config.load(_write(tmp_path, raw))
+
+
+@pytest.mark.parametrize(
+    "url",
+    [
+        "https://api.telegram.org",
+        "https://bot.example.com:8443",
+        "http://localhost:8081",
+        "http://127.0.0.1:8081",
+        "http://[::1]:8081",
+    ],
+)
+def test_accepted_bot_api_base_urls(tmp_path, url):
+    raw = _example_dict()
+    raw["telegram"]["bot_api_base_url"] = url
+
+    assert Config.load(_write(tmp_path, raw)).telegram.bot_api_base_url == url
+
+
+@pytest.mark.parametrize(
+    "url",
+    [
+        "http://api.telegram.org",
+        "http://192.168.1.10:8081",
+        "api.telegram.org",
+        "ftp://api.telegram.org",
+    ],
+)
+def test_plaintext_bot_api_base_urls_are_rejected(tmp_path, url):
+    """A plaintext request line would carry the bot token."""
+    raw = _example_dict()
+    raw["telegram"]["bot_api_base_url"] = url
+
+    with pytest.raises(ValidationError, match="must use https"):
+        Config.load(_write(tmp_path, raw))

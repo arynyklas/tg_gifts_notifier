@@ -16,14 +16,19 @@ import qrcode
 from telethon import TelegramClient, errors
 import yaml
 
-from src import constants, utils
+from src import constants
 from src.bot_api import BotApiClient
 from src.config import Config
 from src.detector import Detector, baseline_upgradability
 from src.logger import get_logger
 from src.notifier import Notifier
 from src.store import StarGiftsStore
-from src.userbot import build_client, fetch_star_gifts, resolve_peer
+from src.userbot import (
+    AuthorizationLostError,
+    build_client,
+    fetch_star_gifts,
+    resolve_peer,
+)
 
 _EXIT_OK = 0
 _EXIT_CONFIG = 1
@@ -73,6 +78,7 @@ async def supervise(
     name: str,
     factory: Callable[[], Coroutine[Any, Any, None]],
     logger: Logger,
+    fatal: asyncio.Event,
 ) -> None:
     delay = 1.0
 
@@ -89,16 +95,25 @@ async def supervise(
 
             raise
 
+        except AuthorizationLostError as ex:
+            logger.critical(
+                "Authorization lost (%s); run: python -m src.main --login", ex
+            )
+            fatal.set()
+
+            return
+
         except Exception:
             logger.exception("Task %s crashed, restarting in %.1fs", name, delay)
 
-        delay = (
-            1.0
-            if time.monotonic() - started > _HEALTHY_UPTIME
-            else min(delay * 2, _MAX_RESTART_DELAY)
-        )
+        # The delay is measured before the sleep and applied after it, so the
+        # wait matches the one just logged and a long backoff cannot be mistaken
+        # for a healthy run.
+        healthy = time.monotonic() - started > _HEALTHY_UPTIME
 
         await asyncio.sleep(delay)
+
+        delay = 1.0 if healthy else min(delay * 2, _MAX_RESTART_DELAY)
 
 
 def _install_signal_handlers(stop: asyncio.Event, logger: Logger) -> None:
@@ -191,69 +206,65 @@ async def _sign_in_with_password(client: TelegramClient, logger: Logger) -> obje
 async def _login_qr(client: TelegramClient, logger: Logger) -> int:
     await client.connect()
 
-    try:
-        if await client.is_user_authorized():
-            logger.info(
-                "Session is already authorized as %s", _describe(await client.get_me())
-            )
+    if await client.is_user_authorized():
+        logger.info(
+            "Session is already authorized as %s", _describe(await client.get_me())
+        )
 
-            return _EXIT_OK
+        return _EXIT_OK
+
+    try:
+        qr = await client.qr_login()
+
+    except errors.SessionPasswordNeededError:
+        # A previous run's code was already scanned and accepted: the session
+        # only lacks the password, so asking for another scan cannot help.
+        logger.info("A previously scanned code is still pending its password")
+
+        user = await _sign_in_with_password(client, logger)
+
+        if user is None:
+            return _EXIT_CONFIG
+
+        logger.info("Authorized as %s", _describe(user))
+
+        return _EXIT_OK
+
+    for round_index in range(1, _QR_MAX_ROUNDS + 1):
+        _print_qr(qr.url)
+
+        print(
+            "Scan the code above in Telegram: Settings -> Devices -> Link Desktop Device.\n"
+            f"Or open this link on an already authorized device: {qr.url}\n"
+            f"Waiting for the scan; code {round_index}/{_QR_MAX_ROUNDS} "
+            f"is valid for {_seconds_until(qr.expires):.0f}s..."
+        )
 
         try:
-            qr = await client.qr_login()
+            user = await qr.wait()
+
+        except TimeoutError:
+            logger.warning(
+                "QR code expired before it was scanned, generating a new one"
+            )
+
+            await qr.recreate()
+
+            continue
 
         except errors.SessionPasswordNeededError:
-            # A previous run's code was already scanned and accepted: the session
-            # only lacks the password, so asking for another scan cannot help.
-            logger.info("A previously scanned code is still pending its password")
-
             user = await _sign_in_with_password(client, logger)
 
             if user is None:
                 return _EXIT_CONFIG
 
-            logger.info("Authorized as %s", _describe(user))
+        logger.info("Authorized as %s", _describe(user))
 
-            return _EXIT_OK
+        return _EXIT_OK
 
-        for round_index in range(1, _QR_MAX_ROUNDS + 1):
-            _print_qr(qr.url)
+    logger.error("QR login did not complete after %d codes", _QR_MAX_ROUNDS)
 
-            print(
-                "Scan the code above in Telegram: Settings -> Devices -> Link Desktop Device.\n"
-                f"Or open this link on an already authorized device: {qr.url}\n"
-                f"Waiting for the scan; code {round_index}/{_QR_MAX_ROUNDS} "
-                f"is valid for {_seconds_until(qr.expires):.0f}s..."
-            )
-
-            try:
-                user = await qr.wait()
-
-            except TimeoutError:
-                logger.warning(
-                    "QR code expired before it was scanned, generating a new one"
-                )
-
-                await qr.recreate()
-
-                continue
-
-            except errors.SessionPasswordNeededError:
-                user = await _sign_in_with_password(client, logger)
-
-                if user is None:
-                    return _EXIT_CONFIG
-
-            logger.info("Authorized as %s", _describe(user))
-
-            return _EXIT_OK
-
-        logger.error("QR login did not complete after %d codes", _QR_MAX_ROUNDS)
-
-        return _EXIT_CONFIG
-
-    finally:
-        await client.disconnect()
+    return _EXIT_CONFIG
 
 
 async def _save_only(
@@ -263,9 +274,9 @@ async def _save_only(
     logger: Logger,
 ) -> int:
     if len(store):
-        stamp = utils.get_current_datetime(
-            ZoneInfo(cfg.notifications.timezone)
-        ).replace(":", "-")
+        stamp = datetime.now(tz=ZoneInfo(cfg.notifications.timezone)).strftime(
+            "%Y-%m-%d_%H-%M-%S"
+        )
         dump_path = cfg.storage.data_filepath.with_name(f"star_gifts_dump_{stamp}.json")
         dump_store = StarGiftsStore(dump_path, cfg.storage.save_debounce, logger)
 
@@ -274,7 +285,7 @@ async def _save_only(
 
         logger.info("Old gift data dumped to %s", dump_path)
 
-    _, parsed = await fetch_star_gifts(client, 0, logger)
+    parsed = await fetch_star_gifts(client, logger)
 
     if parsed is None:
         logger.error("Gift catalog came back unmodified for hash 0, nothing saved")
@@ -325,7 +336,13 @@ async def _detect(
             logger=logger,
         )
 
-        notifier.validate_texts()
+        try:
+            notifier.validate_texts()
+
+        except (KeyError, IndexError) as ex:
+            logger.critical("Notification templates are invalid: %s", ex)
+
+            return _EXIT_CONFIG
 
         detector = Detector(
             client=client,
@@ -333,13 +350,18 @@ async def _detect(
             store=store,
             cfg=cfg,
             logger=logger,
-            track_updates=True,
             check_upgrades=upgrades_peer is not None,
         )
 
         stop = asyncio.Event()
+        fatal = asyncio.Event()
 
         _install_signal_handlers(stop, logger)
+
+        pending = detector.seed_pending_announcements()
+
+        if pending:
+            logger.info("Re-announcing %d gifts interrupted by an earlier run", pending)
 
         supervised: list[tuple[str, Callable[[], Coroutine[Any, Any, None]]]] = [
             ("saver", store.run_saver),
@@ -351,13 +373,24 @@ async def _detect(
             supervised.append(("upgrades", detector.upgrades_loop))
 
         tasks = [
-            asyncio.create_task(supervise(name, factory, logger), name=name)
+            asyncio.create_task(supervise(name, factory, logger, fatal), name=name)
             for name, factory in supervised
         ]
 
         logger.info("Started tasks: %s", [name for name, _ in supervised])
 
-        await stop.wait()
+        # `asyncio.wait` rejects bare coroutines on 3.13.
+        waiters = [
+            asyncio.create_task(stop.wait(), name="stop"),
+            asyncio.create_task(fatal.wait(), name="fatal"),
+        ]
+
+        try:
+            await asyncio.wait(waiters, return_when=asyncio.FIRST_COMPLETED)
+
+        finally:
+            for waiter in waiters:
+                waiter.cancel()
 
         logger.info("Stopping tasks")
 
@@ -369,7 +402,7 @@ async def _detect(
     finally:
         await bot_api.aclose()
 
-    return _EXIT_OK
+    return _EXIT_UNAUTHORIZED if fatal.is_set() else _EXIT_OK
 
 
 async def _run(args: argparse.Namespace, cfg: Config, logger: Logger) -> int:
@@ -407,6 +440,13 @@ async def _run(args: argparse.Namespace, cfg: Config, logger: Logger) -> int:
 
             return _EXIT_UNAUTHORIZED
 
+        if migrated:
+            # A migrated v1 file has no upgradability at all, so without this the
+            # first upgrades cycle announces every already-upgradable gift.
+            marked = await baseline_upgradability(client, store, cfg, logger)
+
+            logger.info("Marked %d migrated gifts as already upgradable", marked)
+
         if args.save_only:
             return await _save_only(client, store, cfg, logger)
 
@@ -438,6 +478,16 @@ async def _run_login(mode: str, cfg: Config, logger: Logger) -> int:
 
         return _EXIT_CONFIG
 
+    except RuntimeError as ex:
+        # `TelegramClient.start()` aborts with a bare RuntimeError after three
+        # rejected codes, and it leaves the client connected either way.
+        logger.critical("Login failed: %s", ex)
+
+        return _EXIT_CONFIG
+
+    finally:
+        await client.disconnect()
+
 
 async def main() -> int:
     args = _build_parser().parse_args()
@@ -450,7 +500,19 @@ async def main() -> int:
 
         return _EXIT_CONFIG
 
-    except (OSError, yaml.YAMLError, ValidationError) as ex:
+    except ValidationError as ex:
+        # `extra="forbid"` puts the offending value in the message, and a typo in
+        # a secret-bearing key would print the secret.
+        print(f"Invalid config {args.config}:", file=sys.stderr)
+
+        for error in ex.errors(include_input=False, include_url=False):
+            location = " -> ".join(map(str, error["loc"]))
+
+            print(f"  {location}: {error['msg']}", file=sys.stderr)
+
+        return _EXIT_CONFIG
+
+    except (OSError, yaml.YAMLError) as ex:
         print(f"Invalid config {args.config}: {ex}", file=sys.stderr)
 
         return _EXIT_CONFIG
@@ -465,11 +527,6 @@ async def main() -> int:
 
     except RuntimeError:
         logger.critical("Startup failed", exc_info=True)
-
-        return _EXIT_CONFIG
-
-    except (KeyError, IndexError) as ex:
-        logger.critical("Notification templates are invalid: %s", ex)
 
         return _EXIT_CONFIG
 

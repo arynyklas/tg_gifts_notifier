@@ -1,5 +1,7 @@
+from collections.abc import Iterator
 import logging
 from pathlib import Path
+from uuid import uuid4
 
 import pytest
 import yaml
@@ -11,11 +13,22 @@ EXAMPLE_CONFIG_PATH = REPO_ROOT / "config.example.yaml"
 
 
 @pytest.fixture
-def logger() -> logging.Logger:
-    instance = logging.getLogger("tests")
-    instance.addHandler(logging.NullHandler())
+def logger() -> Iterator[logging.Logger]:
+    """A logger of its own per test, discarded on teardown.
 
-    return instance
+    A single shared `"tests"` logger accumulated one `NullHandler` per use for
+    the whole session, and any level or handler a test set leaked into the next.
+    """
+    instance = logging.getLogger(f"tests.{uuid4().hex}")
+    handler = logging.NullHandler()
+
+    instance.addHandler(handler)
+    instance.propagate = False
+
+    yield instance
+
+    instance.removeHandler(handler)
+    handler.close()
 
 
 @pytest.fixture

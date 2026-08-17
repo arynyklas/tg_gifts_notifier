@@ -6,7 +6,7 @@ from telethon import TelegramClient, errors
 from telethon.sessions import Session
 
 from src.config import Config, TelegramConfig
-from src.main import _build_parser, _login, _print_qr
+from src.main import _build_parser, _login, _print_qr, _run_login
 from src.userbot import build_client
 
 ACCEPTED = "hunter2"  # the only value the fake client signs in with
@@ -52,9 +52,11 @@ class FakeClient:
         outcomes: list[object] | None = None,
         accepted_password: str | None = None,
         qr_login_error: BaseException | None = None,
+        start_error: BaseException | None = None,
     ) -> None:
         self.accepted_password = accepted_password
         self.qr_login_error = qr_login_error
+        self.start_error = start_error
         self.authorized = authorized
         self.connected = False
         self.disconnected = False
@@ -92,7 +94,8 @@ class FakeClient:
         self.started = True
 
         async def _started() -> None:
-            return None
+            if self.start_error is not None:
+                raise self.start_error
 
         return _started()
 
@@ -128,7 +131,6 @@ async def test_qr_login_succeeds_on_first_scan(logger, capsys):
     assert await _login(_as_client(fake), logger, "qr") == 0
 
     assert fake.connected is True
-    assert fake.disconnected is True
     assert fake.qr.waits == 1
     assert fake.qr.recreated == 0
     assert QR_URL in capsys.readouterr().out
@@ -141,7 +143,6 @@ async def test_qr_login_regenerates_an_expired_code(logger):
 
     assert fake.qr.waits == 3
     assert fake.qr.recreated == 2
-    assert fake.disconnected is True
 
 
 async def test_qr_login_gives_up_after_the_last_code(logger):
@@ -150,7 +151,6 @@ async def test_qr_login_gives_up_after_the_last_code(logger):
     assert await _login(_as_client(fake), logger, "qr") == 1
 
     assert fake.qr.waits == 6
-    assert fake.disconnected is True
 
 
 async def test_qr_login_prompts_for_the_two_step_password(logger, monkeypatch):
@@ -199,7 +199,6 @@ async def test_qr_login_stops_asking_after_the_last_attempt(logger, monkeypatch)
     assert await _login(_as_client(fake), logger, "qr") == 1
 
     assert fake.passwords == ["a", "b", "c"]
-    assert fake.disconnected is True
 
 
 async def test_qr_login_does_not_send_an_empty_password(logger, monkeypatch):
@@ -229,7 +228,6 @@ async def test_pending_password_session_skips_the_qr_code(logger, monkeypatch, c
     assert fake.passwords == [ACCEPTED]
     assert fake.qr.waits == 0
     assert "█" not in capsys.readouterr().out
-    assert fake.disconnected is True
 
 
 async def test_pending_password_session_reports_a_lost_password(logger, monkeypatch):
@@ -242,8 +240,6 @@ async def test_pending_password_session_reports_a_lost_password(logger, monkeypa
 
     assert await _login(_as_client(fake), logger, "qr") == 1
 
-    assert fake.disconnected is True
-
 
 async def test_qr_login_short_circuits_an_authorized_session(logger):
     fake = FakeClient(authorized=True)
@@ -251,7 +247,6 @@ async def test_qr_login_short_circuits_an_authorized_session(logger):
     assert await _login(_as_client(fake), logger, "qr") == 0
 
     assert fake.qr.waits == 0
-    assert fake.disconnected is True
 
 
 async def test_phone_login_uses_start_and_disconnects(logger):
@@ -279,3 +274,34 @@ def test_qr_login_client_must_receive_updates(config: Config, tmp_path, logger):
     finally:
         cast(Session, notifier_client.session).close()
         cast(Session, login_client.session).close()
+
+
+async def test_run_login_always_disconnects(config: Config, logger, monkeypatch):
+    """The client owns a connection either way; `_run_login` has to close it."""
+    fake = FakeClient(authorized=True)
+
+    monkeypatch.setattr("src.main.build_client", lambda *args, **kwargs: fake)
+
+    assert await _run_login("qr", config, logger) == 0
+
+    assert fake.disconnected is True
+
+
+async def test_run_login_reports_a_spent_sign_in_instead_of_a_traceback(
+    config: Config, logger, monkeypatch
+):
+    """`start()` aborts with a bare `RuntimeError` after three rejected codes.
+
+    `main()` cannot catch it — `_run_login` is called above its `try` — so the
+    ordinary "I mistyped the code" outcome was a raw traceback plus pending-task
+    noise.
+    """
+    fake = FakeClient(
+        start_error=RuntimeError("3 consecutive sign-in attempts failed. Aborting")
+    )
+
+    monkeypatch.setattr("src.main.build_client", lambda *args, **kwargs: fake)
+
+    assert await _run_login("phone", config, logger) == 1
+
+    assert fake.disconnected is True

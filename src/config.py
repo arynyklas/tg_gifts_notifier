@@ -1,6 +1,7 @@
 import logging
 from pathlib import Path
 from typing import Annotated, Self
+from urllib.parse import urlsplit
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from pydantic import (
@@ -15,6 +16,10 @@ import yaml
 from src import constants
 
 _LEVELS = logging.getLevelNamesMapping()
+# A plaintext request line would carry the bot token; only a Bot API server on
+# this machine is allowed to be reached without TLS. `urlsplit` strips the
+# brackets of an IPv6 host, so `::1` is the form seen here.
+_LOCAL_HOSTS = frozenset({"localhost", "127.0.0.1", "::1"})
 
 
 def _parse_level(value: object) -> object:
@@ -43,6 +48,20 @@ class TelegramConfig(_Base):
     bot_tokens: list[str] = Field(min_length=1)
     bot_api_base_url: str = "https://api.telegram.org"
     request_timeout: float = 20.0
+
+    @field_validator("bot_api_base_url")
+    @classmethod
+    def _check_base_url(cls, value: str) -> str:
+        split = urlsplit(value)
+
+        if split.scheme == "https" or (
+            split.scheme == "http" and split.hostname in _LOCAL_HOSTS
+        ):
+            return value
+
+        raise ValueError(
+            "bot_api_base_url must use https, or http only for a local server"
+        )
 
 
 class DetectorConfig(_Base):
