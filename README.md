@@ -93,7 +93,7 @@ uv run pytest
 `config.yaml` is validated on startup; unknown keys are rejected.
 
 | Key | Type | Description |
-|---|---|---|
+| --- | --- | --- |
 | `telegram.api_id` | Integer | Telegram API ID from my.telegram.org |
 | `telegram.api_hash` | String | Telegram API hash matching the API ID |
 | `telegram.session_path` | String | Path of the Telethon session file (default `sessions/userbot.session`) |

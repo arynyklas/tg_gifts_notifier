@@ -1,10 +1,10 @@
 import asyncio
 import itertools
-import json
 from logging import Logger
 from typing import Any
 
-import httpx
+import niquests
+from niquests import exceptions as niquests_errors
 
 from src.config import TelegramConfig
 
@@ -29,14 +29,15 @@ class BotApiClient:
         self._tokens = list(cfg.bot_tokens)
         self._cycle = itertools.cycle(self._tokens)
         self._logger = logger
-        self._http = httpx.AsyncClient(
+        self._http = niquests.AsyncSession(
             base_url=cfg.bot_api_base_url,
             timeout=cfg.request_timeout,
-            limits=httpx.Limits(max_connections=len(self._tokens) * 2),
+            pool_maxsize=len(self._tokens) * 2,
+            retries=0,  # token rotation below is the only retry mechanism
         )
 
     async def aclose(self) -> None:
-        await self._http.aclose()
+        await self._http.close()
 
     async def send_message(
         self,
@@ -85,17 +86,32 @@ class BotApiClient:
             token = next(self._cycle)
 
             try:
-                # `httpx.TimeoutException` is a `TransportError` subclass.
                 response = (
                     await self._http.post(f"/bot{token}/{method}", json=body)
                 ).json()
 
-            except (httpx.TransportError, json.JSONDecodeError):
+            except (
+                niquests_errors.Timeout,
+                niquests_errors.ConnectionError,
+                niquests_errors.JSONDecodeError,
+            ) as ex:
                 self._logger.warning(
-                    "Bot API %s failed at transport level (attempt %d/%d)",
+                    "Bot API %s failed at transport level (attempt %d/%d): %s",
                     method,
                     attempt,
                     attempts,
+                    ex,
+                )
+
+                continue
+
+            if not isinstance(response, dict):
+                self._logger.warning(
+                    "Bot API %s returned a non-object body (attempt %d/%d): %r",
+                    method,
+                    attempt,
+                    attempts,
+                    response,
                 )
 
                 continue
