@@ -82,6 +82,8 @@ Re-baseline the stored gift data (fetches the current catalog, notifies nothing,
 uv run python -m src.main --save-only
 ```
 
+It also records which of those gifts are already upgradable, so the first upgrade cycle reports only gifts that become upgradable afterwards. That probe is one request per gift, which is why `--save-only` takes a few seconds on a full catalog.
+
 Use `--config path/to/config.yaml` to run against a different config file.
 
 Exit codes: `0` clean shutdown, `1` configuration or startup failure, `2` session not authorized.

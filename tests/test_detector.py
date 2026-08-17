@@ -9,9 +9,10 @@ from telethon.tl import functions, types
 
 from src.bot_api import BotApiClient, BotApiError
 from src.config import Config
-from src.detector import Detector
+from src.detector import Detector, baseline_upgradability
 from src.notifier import Notifier
 from src.store import StarGiftsStore
+from src.userbot import fetch_star_gifts
 
 GIFT_LIMITED_ID = 200
 GIFT_REGULAR_ID = 100
@@ -442,3 +443,122 @@ async def test_upgrade_is_not_marked_when_the_notification_fails(
     assert delivered is not None
     assert failed.is_upgradable is False  # announcement failed, retried next cycle
     assert delivered.is_upgradable is True
+
+
+async def test_unchanged_polls_leave_nothing_to_save(
+    config, logger, tmp_path, first_payload
+):
+    """An identical catalog must not schedule a write.
+
+    The catalog is polled every second and the payload is nearly always the
+    same; marking the store dirty per poll rewrote the whole file every debounce
+    window for the process lifetime.
+    """
+    same_payload: list[types.TypeStarGift] = [
+        _star_gift(GIFT_LIMITED_ID, limited=True, remains=40, total=100),
+        _star_gift(GIFT_REGULAR_ID, limited=False),
+    ]
+    detector, _, _, store = _build(
+        config, logger, tmp_path, [first_payload, same_payload]
+    )
+
+    await detector.poll_once()
+    await store.flush()
+
+    assert store.is_dirty is False
+
+    assert await detector.poll_once() is True  # a full payload was processed
+    assert store.is_dirty is False  # but nothing in it changed
+
+
+async def test_stock_change_still_schedules_a_save(
+    config, logger, tmp_path, first_payload
+):
+    sold_payload: list[types.TypeStarGift] = [
+        _star_gift(GIFT_LIMITED_ID, limited=True, remains=39, total=100),
+        _star_gift(GIFT_REGULAR_ID, limited=False),
+    ]
+    detector, _, _, store = _build(
+        config, logger, tmp_path, [first_payload, sold_payload]
+    )
+
+    await detector.poll_once()
+    await store.flush()
+
+    await detector.poll_once()
+
+    assert store.is_dirty is True
+
+
+async def test_baselined_gifts_are_still_probed_for_upgrades(
+    config, logger, tmp_path, first_payload
+):
+    """`--save-only` leaves every gift without a `message_id`.
+
+    Requiring one to probe upgradability silenced the upgrades chat for the whole
+    baselined catalog, so probing must depend only on `is_upgradable`.
+    """
+    detector, client, bot_api, store = _build(
+        config, logger, tmp_path, [first_payload], check_upgrades=True
+    )
+
+    # Exactly what `--save-only` does: store the catalog, notify nothing.
+    _, parsed = await fetch_star_gifts(cast(TelegramClient, client), 0, logger)
+
+    assert parsed is not None
+
+    await store.replace_all(gift.data for gift in parsed.values())
+
+    assert all(gift.message_id is None for gift in store.snapshot())
+
+    client.upgradable = {GIFT_LIMITED_ID}
+
+    assert await detector.check_upgrades_once() == 1
+    assert sorted(client.upgrade_probes) == sorted([GIFT_LIMITED_ID, GIFT_REGULAR_ID])
+
+    limited = store.get(GIFT_LIMITED_ID)
+
+    assert limited is not None
+    assert limited.is_upgradable is True
+    assert bot_api.sent[-1]["chat_id"] == config.notifications.upgrades_chat_id
+
+
+async def test_baseline_records_upgradability_without_announcing(
+    config, logger, tmp_path, first_payload
+):
+    """`--save-only` must baseline upgradability, not just message state.
+
+    Otherwise the first upgrades cycle announces every gift that is already
+    upgradable; against the live catalog that was 118 of 149 gifts.
+    """
+    detector, client, bot_api, store = _build(
+        config, logger, tmp_path, [first_payload], check_upgrades=True
+    )
+
+    _, parsed = await fetch_star_gifts(cast(TelegramClient, client), 0, logger)
+
+    assert parsed is not None
+
+    await store.replace_all(gift.data for gift in parsed.values())
+
+    client.upgradable = {GIFT_LIMITED_ID}
+
+    assert (
+        await baseline_upgradability(
+            cast(TelegramClient, client), store, config, logger
+        )
+        == 1
+    )
+
+    limited = store.get(GIFT_LIMITED_ID)
+    regular = store.get(GIFT_REGULAR_ID)
+
+    assert limited is not None
+    assert regular is not None
+    assert limited.is_upgradable is True
+    assert regular.is_upgradable is False
+
+    # Nothing was announced, and the next cycle has nothing left to say.
+    assert bot_api.sent == []
+    assert client.sent_stickers == []
+    assert await detector.check_upgrades_once() == 0

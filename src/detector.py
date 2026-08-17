@@ -8,7 +8,7 @@ from telethon.tl import types
 from src.config import Config
 from src.notifier import Notifier
 from src.store import StarGiftsStore
-from src.userbot import ParsedGift, fetch_star_gifts, is_gift_upgradable
+from src.userbot import ParsedGift, fetch_star_gifts, probe_upgradable
 
 
 class Detector:
@@ -38,6 +38,7 @@ class Detector:
         self._updates_event = asyncio.Event()
         self._retry_at: dict[int, float] = {}
         self._retry_delay: dict[int, float] = {}
+        self._upgrade_slots = asyncio.Semaphore(cfg.detector.upgrades_check_concurrency)
 
     def sticker_for(self, gift_id: int) -> types.Document | None:
         return self._stickers.get(gift_id)
@@ -115,8 +116,6 @@ class Detector:
         await self._retry_announcements()
         await self._apply_live(parsed)
 
-        self._store.mark_dirty()
-
         return True
 
     async def drain_updates_once(self) -> int:
@@ -152,50 +151,28 @@ class Detector:
         return edited
 
     async def check_upgrades_once(self) -> int:
-        """Probe every non-upgradable gift. Returns announced upgrades."""
+        """Probe every gift not yet known to be upgradable. Returns announcements.
+
+        Gifts that were never announced are probed too: the upgrade notification
+        goes to its own chat and does not reply to the original message, and
+        after a `--save-only` baseline nothing in the file has a `message_id`.
+        """
         if not self._check_upgrades:
             return 0
 
-        candidates = [
-            gift
-            for gift in self._store.snapshot()
-            if not gift.is_upgradable and gift.message_id is not None
-        ]
+        candidates = [gift for gift in self._store.gifts() if not gift.is_upgradable]
 
         if not candidates:
             self._logger.debug("No non-upgradable gifts to check")
 
             return 0
 
-        semaphore = asyncio.Semaphore(self._detector_cfg.upgrades_check_concurrency)
-
-        async def probe(gift_id: int) -> tuple[int, bool]:
-            async with semaphore:
-                return gift_id, await is_gift_upgradable(
-                    self._client, gift_id, self._logger
-                )
-
-        results = await asyncio.gather(
-            *(probe(gift.id) for gift in candidates),
-            return_exceptions=True,
+        upgradable = await probe_upgradable(
+            self._client,
+            [gift.id for gift in candidates],
+            self._upgrade_slots,
+            self._logger,
         )
-
-        upgradable: list[int] = []
-
-        for candidate, result in zip(candidates, results, strict=True):
-            if isinstance(result, BaseException):
-                self._logger.error(
-                    "Failed to check upgradability of gift %d",
-                    candidate.id,
-                    exc_info=result,
-                )
-
-                continue
-
-            gift_id, is_upgradable = result
-
-            if is_upgradable:
-                upgradable.append(gift_id)
 
         announced = 0
 
@@ -250,11 +227,14 @@ class Detector:
             return
 
         now = monotonic()
+        # Driven by the pending set, not by the catalog: the store holds every
+        # gift ever seen, and all but a handful are already announced.
         due = [
             gift
-            for gift in self._store.snapshot()
-            if gift.message_id is None
-            and self._retry_at.get(gift.id, float("inf")) <= now
+            for gift_id, retry_at in self._retry_at.items()
+            if retry_at <= now
+            and (gift := self._store.get(gift_id)) is not None
+            and gift.message_id is None
         ]
 
         for gift in due:
@@ -265,21 +245,16 @@ class Detector:
                 self._schedule_retry(gift.id)
 
     async def _apply_live(self, parsed: dict[int, ParsedGift]) -> None:
-        for gift_id, gift in parsed.items():
-            result = await self._store.apply_live(gift.data)
+        drops = await self._store.apply_live_many(gift.data for gift in parsed.values())
 
-            if result is None or not self._track_updates:
+        if not self._track_updates:
+            return
+
+        for stored, previous_available in drops:
+            if stored.message_id is None:
                 continue
 
-            stored, previous_available = result
-
-            if (
-                stored.available_amount >= previous_available
-                or stored.message_id is None
-            ):
-                continue
-
-            self._pending_updates.setdefault(gift_id, previous_available)
+            self._pending_updates.setdefault(stored.id, previous_available)
             self._updates_event.set()
 
     def _schedule_retry(self, gift_id: int) -> None:
@@ -294,3 +269,33 @@ class Detector:
     def _clear_retry(self, gift_id: int) -> None:
         self._retry_at.pop(gift_id, None)
         self._retry_delay.pop(gift_id, None)
+
+
+async def baseline_upgradability(
+    client: TelegramClient,
+    store: StarGiftsStore,
+    cfg: Config,
+    logger: Logger,
+) -> int:
+    """Record which stored gifts are already upgradable, announcing nothing.
+
+    Without this, a `--save-only` baseline stores every gift as not upgradable
+    and the first upgrades cycle announces the entire existing catalog — 118 of
+    149 gifts were already upgradable when this was written.
+    """
+    candidates = [gift.id for gift in store.gifts() if not gift.is_upgradable]
+
+    if not candidates:
+        return 0
+
+    upgradable = await probe_upgradable(
+        client,
+        candidates,
+        asyncio.Semaphore(cfg.detector.upgrades_check_concurrency),
+        logger,
+    )
+
+    for gift_id in upgradable:
+        await store.mark_upgradable(gift_id)
+
+    return len(upgradable)

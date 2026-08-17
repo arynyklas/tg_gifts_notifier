@@ -1,5 +1,5 @@
 import asyncio
-from collections.abc import Iterable
+from collections.abc import Iterable, ValuesView
 import json
 from logging import Logger
 import os
@@ -8,6 +8,38 @@ from typing import Self
 
 from src import constants
 from src.models import StarGiftData, StarGiftsFile
+
+
+def _merge_live(stored: StarGiftData, live: StarGiftData) -> bool:
+    """Copy the volatile fields of `live` onto `stored`; report a real change.
+
+    Compared field by field rather than through a dump or a tuple so that the
+    unchanged case — nearly every poll — allocates nothing.
+    """
+    if (
+        stored.number == live.number
+        and stored.price == live.price
+        and stored.convert_price == live.convert_price
+        and stored.available_amount == live.available_amount
+        and stored.total_amount == live.total_amount
+        and stored.require_premium == live.require_premium
+        and stored.user_limited == live.user_limited
+        and stored.is_limited == live.is_limited
+        and stored.last_sale_timestamp == live.last_sale_timestamp
+    ):
+        return False
+
+    stored.number = live.number
+    stored.price = live.price
+    stored.convert_price = live.convert_price
+    stored.available_amount = live.available_amount
+    stored.total_amount = live.total_amount
+    stored.require_premium = live.require_premium
+    stored.user_limited = live.user_limited
+    stored.is_limited = live.is_limited
+    stored.last_sale_timestamp = live.last_sale_timestamp
+
+    return True
 
 
 class StarGiftsStore:
@@ -58,7 +90,16 @@ class StarGiftsStore:
         return self._gifts.get(gift_id)
 
     def snapshot(self) -> list[StarGiftData]:
+        """Gifts ordered by id, for persistence and reporting."""
         return sorted(self._gifts.values(), key=lambda gift: gift.id)
+
+    def gifts(self) -> ValuesView[StarGiftData]:
+        """Unordered live view, for scans that do not care about order."""
+        return self._gifts.values()
+
+    @property
+    def is_dirty(self) -> bool:
+        return self._dirty.is_set()
 
     async def add(self, gift: StarGiftData) -> None:
         async with self._lock:
@@ -66,33 +107,44 @@ class StarGiftsStore:
 
         self.mark_dirty()
 
-    async def apply_live(self, live: StarGiftData) -> tuple[StarGiftData, int] | None:
-        """Merge volatile fields of `live` into the stored gift.
+    async def apply_live_many(
+        self, live: Iterable[StarGiftData]
+    ) -> list[tuple[StarGiftData, int]]:
+        """Merge the volatile fields of a whole payload under a single lock.
 
-        Returns the stored gift and its previous `available_amount`, or `None`
-        when the gift is unknown. Never touches `message_id`,
-        `sticker_message_id`, `is_upgradable` or `first_appearance_timestamp`,
-        so a concurrent upgrade notification cannot be clobbered.
+        Returns `(stored, previous_available)` for every known gift whose stock
+        dropped. Unknown gifts are ignored, and `message_id`,
+        `sticker_message_id`, `is_upgradable` and `first_appearance_timestamp`
+        are never touched, so a concurrent notification cannot be clobbered.
+
+        The store is marked dirty only when a field really changed: the catalog
+        is polled every second and is usually identical, so marking it
+        unconditionally rewrote the whole file every debounce window forever.
         """
+        drops: list[tuple[StarGiftData, int]] = []
+        changed = False
+
         async with self._lock:
-            stored = self._gifts.get(live.id)
+            for item in live:
+                stored = self._gifts.get(item.id)
 
-            if stored is None:
-                return None
+                if stored is None:
+                    continue
 
-            previous_available = stored.available_amount
+                previous_available = stored.available_amount
 
-            stored.number = live.number
-            stored.price = live.price
-            stored.convert_price = live.convert_price
-            stored.available_amount = live.available_amount
-            stored.total_amount = live.total_amount
-            stored.require_premium = live.require_premium
-            stored.user_limited = live.user_limited
-            stored.is_limited = live.is_limited
-            stored.last_sale_timestamp = live.last_sale_timestamp
+                if not _merge_live(stored, item):
+                    continue
 
-            return stored, previous_available
+                changed = True
+
+                if stored.available_amount < previous_available:
+                    drops.append((stored, previous_available))
+
+        if changed:
+            self.mark_dirty()
+
+        return drops
 
     async def set_message_ids(
         self,
@@ -152,6 +204,12 @@ class StarGiftsStore:
             await self._write()
 
     async def flush(self) -> None:
+        """Write pending changes, if any."""
+        if not self._dirty.is_set():
+            self._logger.debug("Nothing to save to %s", self._path)
+
+            return
+
         self._dirty.clear()
 
         await self._write()

@@ -19,7 +19,7 @@ import yaml
 from src import constants, utils
 from src.bot_api import BotApiClient
 from src.config import Config
-from src.detector import Detector
+from src.detector import Detector, baseline_upgradability
 from src.logger import get_logger
 from src.notifier import Notifier
 from src.store import StarGiftsStore
@@ -282,9 +282,16 @@ async def _save_only(
         return _EXIT_CONFIG
 
     await store.replace_all([gift.data for gift in parsed.values()])
-    await store.flush()
 
     logger.info("Saved %d gifts to %s", len(parsed), cfg.storage.data_filepath)
+
+    # Upgradability is part of the state being baselined: without this the first
+    # upgrades cycle announces every gift that is already upgradable.
+    marked = await baseline_upgradability(client, store, cfg, logger)
+
+    await store.flush()
+
+    logger.info("Marked %d of %d gifts as already upgradable", marked, len(parsed))
 
     return _EXIT_OK
 

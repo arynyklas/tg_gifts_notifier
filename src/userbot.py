@@ -1,5 +1,5 @@
 import asyncio
-from collections.abc import Awaitable, Callable
+from collections.abc import Awaitable, Callable, Sequence
 from dataclasses import dataclass
 from datetime import datetime
 from io import BytesIO
@@ -199,3 +199,36 @@ async def is_gift_upgradable(
             return False
 
     return False
+
+
+async def probe_upgradable(
+    client: TelegramClient,
+    gift_ids: Sequence[int],
+    slots: asyncio.Semaphore,
+    logger: Logger,
+) -> list[int]:
+    """Probe many gifts concurrently; return the ids that are upgradable.
+
+    A failed probe is logged and treated as "not upgradable" so one bad gift
+    cannot sink the batch; `slots` bounds how many probes are in flight.
+    """
+
+    async def probe(gift_id: int) -> bool:
+        async with slots:
+            return await is_gift_upgradable(client, gift_id, logger)
+
+    results = await asyncio.gather(
+        *(probe(gift_id) for gift_id in gift_ids), return_exceptions=True
+    )
+    upgradable: list[int] = []
+
+    for gift_id, result in zip(gift_ids, results, strict=True):
+        if isinstance(result, BaseException):
+            logger.error(
+                "Failed to check upgradability of gift %d", gift_id, exc_info=result
+            )
+
+        elif result:
+            upgradable.append(gift_id)
+
+    return upgradable

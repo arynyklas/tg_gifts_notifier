@@ -108,7 +108,7 @@ def test_corrupt_file_aborts_load(tmp_path, logger):
     raise AssertionError("corrupt data must not be swallowed")
 
 
-async def test_apply_live_preserves_message_state(tmp_path, logger):
+async def test_live_merge_preserves_message_state(tmp_path, logger):
     store = StarGiftsStore(tmp_path / "star_gifts.json", 0.01, logger)
 
     await store.add(
@@ -122,18 +122,20 @@ async def test_apply_live_preserves_message_state(tmp_path, logger):
         )
     )
 
-    result = await store.apply_live(
-        _gift(
-            10,
-            available_amount=7,
-            last_sale_timestamp=2000,
-            first_appearance_timestamp=9999,
-        )
+    drops = await store.apply_live_many(
+        [
+            _gift(
+                10,
+                available_amount=7,
+                last_sale_timestamp=2000,
+                first_appearance_timestamp=9999,
+            )
+        ]
     )
 
-    assert result is not None
+    assert len(drops) == 1
 
-    stored, previous_available = result
+    stored, previous_available = drops[0]
 
     assert previous_available == 10
     assert stored.available_amount == 7
@@ -144,10 +146,73 @@ async def test_apply_live_preserves_message_state(tmp_path, logger):
     assert stored.first_appearance_timestamp == 1000
 
 
-async def test_apply_live_ignores_unknown_gift(tmp_path, logger):
+async def test_live_merge_ignores_unknown_gifts(tmp_path, logger):
     store = StarGiftsStore(tmp_path / "star_gifts.json", 0.01, logger)
 
-    assert await store.apply_live(_gift(10)) is None
+    assert await store.apply_live_many([_gift(10)]) == []
+    assert store.is_dirty is False
+
+
+async def test_identical_payload_leaves_the_store_clean(tmp_path, logger):
+    """The catalog is polled every second and is usually unchanged.
+
+    Marking the store dirty regardless rewrote the whole file every debounce
+    window forever, so an unchanged payload must leave no work behind.
+    """
+    store = StarGiftsStore(tmp_path / "star_gifts.json", 0.01, logger)
+    live = _gift(10, available_amount=5, last_sale_timestamp=2000)
+
+    await store.add(live.model_copy())
+
+    await store.flush()
+
+    assert store.is_dirty is False
+
+    assert await store.apply_live_many([live]) == []
+    assert store.is_dirty is False
+
+    # A single changed field is still caught.
+    assert await store.apply_live_many([_gift(10, available_amount=4)]) != []
+    assert store.is_dirty is True
+
+
+async def test_stock_rise_is_not_reported_as_a_drop(tmp_path, logger):
+    store = StarGiftsStore(tmp_path / "star_gifts.json", 0.01, logger)
+
+    await store.add(_gift(10, available_amount=5))
+
+    assert await store.apply_live_many([_gift(10, available_amount=9)]) == []
+    # The rise is persisted even though it is not an edit trigger.
+    assert store.is_dirty is True
+
+    gift = store.get(10)
+
+    assert gift is not None
+    assert gift.available_amount == 9
+
+
+async def test_flush_without_changes_writes_nothing(tmp_path, logger, monkeypatch):
+    path = tmp_path / "star_gifts.json"
+    store = StarGiftsStore(path, 0.01, logger)
+
+    await store.add(_gift(10))
+    await store.flush()
+
+    writes = 0
+    original = store._write_atomic
+
+    def counting(payload: str) -> None:
+        nonlocal writes
+
+        writes += 1
+
+        original(payload)
+
+    monkeypatch.setattr(store, "_write_atomic", counting)
+
+    await store.flush()
+
+    assert writes == 0
 
 
 async def test_saver_debounces_into_a_single_atomic_write(
