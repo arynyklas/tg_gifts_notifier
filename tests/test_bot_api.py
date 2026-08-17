@@ -3,6 +3,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import json
 import threading
 
+import certifi
 import pytest
 
 from src.bot_api import BotApiClient, BotApiError
@@ -252,3 +253,32 @@ async def test_successful_edit_returns_true(serve):
     assert path.endswith("/editMessageText")
     assert body["text"] == "new text"
     assert body["parse_mode"] == "HTML"
+
+
+async def test_every_request_carries_the_certifi_bundle(serve, monkeypatch):
+    """`verify` only takes effect per request.
+
+    niquests overrides both `AsyncSession(verify=...)` and `session.verify` with
+    the `verify=True` default of each request method, which silently falls back
+    to the OS trust store — where the root signing api.telegram.org may be
+    missing. Moving `verify` back to the session would fail exactly like that,
+    so pin it here.
+    """
+    client = serve(lambda path, body: (200, {"ok": True, "result": {"message_id": 1}}))
+    seen: list[object] = []
+    original = client._http.post
+
+    async def spy(url, **kwargs):
+        seen.append(kwargs.get("verify"))
+
+        return await original(url, **kwargs)
+
+    monkeypatch.setattr(client._http, "post", spy)
+
+    try:
+        await client.send_message(-100, "hello")
+
+    finally:
+        await client.aclose()
+
+    assert seen == [certifi.where()]

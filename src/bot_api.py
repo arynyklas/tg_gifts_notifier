@@ -3,6 +3,7 @@ import itertools
 from logging import Logger
 from typing import Any
 
+import certifi
 import niquests
 from niquests import exceptions as niquests_errors
 
@@ -14,6 +15,12 @@ _BASE_PAYLOAD: dict[str, Any] = {
 }
 _MIN_ATTEMPTS = 3
 _TOO_MANY_REQUESTS = 429
+# niquests verifies against the OS trust store, which on Windows is populated on
+# demand and can lack the root that signs api.telegram.org, failing with
+# CERTIFICATE_VERIFY_FAILED; certifi carries the public roots on every machine.
+# It must be passed per request: `AsyncSession(verify=...)` and `session.verify`
+# are both overridden by the `verify=True` default of every request method.
+_CA_BUNDLE = certifi.where()
 
 
 class BotApiError(Exception):
@@ -87,7 +94,9 @@ class BotApiClient:
 
             try:
                 response = (
-                    await self._http.post(f"/bot{token}/{method}", json=body)
+                    await self._http.post(
+                        f"/bot{token}/{method}", json=body, verify=_CA_BUNDLE
+                    )
                 ).json()
 
             except (
