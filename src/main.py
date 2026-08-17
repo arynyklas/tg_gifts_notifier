@@ -34,6 +34,8 @@ _LOGIN_PHONE = "phone"
 _LOGIN_QR = "qr"
 _QR_MAX_ROUNDS = 6
 _QR_BORDER = 2
+# Matches the `max_attempts` that `TelegramClient.start()` gives the phone flow.
+_PASSWORD_MAX_ATTEMPTS = 3
 
 
 def _build_parser() -> argparse.ArgumentParser:
@@ -154,6 +156,38 @@ async def _login_phone(client: TelegramClient, logger: Logger) -> int:
     return _EXIT_OK
 
 
+async def _sign_in_with_password(client: TelegramClient, logger: Logger) -> object:
+    """Prompt for the two-step password until it is accepted.
+
+    `sign_in(password=...)` refetches the SRP parameters on every call, so a
+    rejected attempt can simply be retried. Returns `None` once the attempts are
+    spent, which keeps a typo from throwing the whole login away.
+    """
+    for attempt in range(1, _PASSWORD_MAX_ATTEMPTS + 1):
+        password = getpass(
+            f"Two-step verification password ({attempt}/{_PASSWORD_MAX_ATTEMPTS}): "
+        )
+
+        if not password:
+            logger.error("Password was empty")
+
+            continue
+
+        try:
+            return await client.sign_in(password=password)
+
+        except errors.PasswordHashInvalidError:
+            logger.error("Password rejected by Telegram")
+
+    logger.critical(
+        "Password was not accepted after %d attempts; reset it in Telegram "
+        "(Settings -> Privacy and Security -> Two-Step Verification) if it is lost",
+        _PASSWORD_MAX_ATTEMPTS,
+    )
+
+    return None
+
+
 async def _login_qr(client: TelegramClient, logger: Logger) -> int:
     await client.connect()
 
@@ -165,7 +199,22 @@ async def _login_qr(client: TelegramClient, logger: Logger) -> int:
 
             return _EXIT_OK
 
-        qr = await client.qr_login()
+        try:
+            qr = await client.qr_login()
+
+        except errors.SessionPasswordNeededError:
+            # A previous run's code was already scanned and accepted: the session
+            # only lacks the password, so asking for another scan cannot help.
+            logger.info("A previously scanned code is still pending its password")
+
+            user = await _sign_in_with_password(client, logger)
+
+            if user is None:
+                return _EXIT_CONFIG
+
+            logger.info("Authorized as %s", _describe(user))
+
+            return _EXIT_OK
 
         for round_index in range(1, _QR_MAX_ROUNDS + 1):
             _print_qr(qr.url)
@@ -190,9 +239,10 @@ async def _login_qr(client: TelegramClient, logger: Logger) -> int:
                 continue
 
             except errors.SessionPasswordNeededError:
-                user = await client.sign_in(
-                    password=getpass("Two-step verification password: ")
-                )
+                user = await _sign_in_with_password(client, logger)
+
+                if user is None:
+                    return _EXIT_CONFIG
 
             logger.info("Authorized as %s", _describe(user))
 

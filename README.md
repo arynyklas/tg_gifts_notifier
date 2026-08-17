@@ -64,6 +64,8 @@ A userbot (Telethon, MTProto layer 227) polls `payments.getStarGifts`; the confi
     uv run python -m src.main --login
     ```
 
+    Both flows ask for the two-step verification password when the account has one, and allow three attempts. Once a QR code has been scanned, the code stays accepted even if the password is then mistyped: rerunning `--login qr` asks only for the password again, without a new code.
+
     The userbot must already be a member of both notification chats — Telethon cannot resolve a `-100…` id it has never seen.
 
 ## Usage

@@ -9,6 +9,7 @@ from src.config import Config, TelegramConfig
 from src.main import _build_parser, _login, _print_qr
 from src.userbot import build_client
 
+ACCEPTED = "hunter2"  # the only value the fake client signs in with
 QR_URL = (
     "tg://login?token=AQAAAAABBBBCCCCDDDDEEEEFFFF0011223344556677889900aabbccddeeff"
 )
@@ -45,8 +46,15 @@ class FakeUser:
 
 class FakeClient:
     def __init__(
-        self, *, authorized: bool = False, outcomes: list[object] | None = None
+        self,
+        *,
+        authorized: bool = False,
+        outcomes: list[object] | None = None,
+        accepted_password: str | None = None,
+        qr_login_error: BaseException | None = None,
     ) -> None:
+        self.accepted_password = accepted_password
+        self.qr_login_error = qr_login_error
         self.authorized = authorized
         self.connected = False
         self.disconnected = False
@@ -67,10 +75,16 @@ class FakeClient:
         return FakeUser("already")
 
     async def qr_login(self) -> FakeQrLogin:
+        if self.qr_login_error is not None:
+            raise self.qr_login_error
+
         return self.qr
 
     async def sign_in(self, password: str | None = None) -> FakeUser:
         self.passwords.append(password or "")
+
+        if self.accepted_password is not None and password != self.accepted_password:
+            raise errors.PasswordHashInvalidError(request=None)
 
         return FakeUser("two-factor")
 
@@ -140,7 +154,7 @@ async def test_qr_login_gives_up_after_the_last_code(logger):
 
 
 async def test_qr_login_prompts_for_the_two_step_password(logger, monkeypatch):
-    monkeypatch.setattr("src.main.getpass", lambda prompt="": "hunter2")
+    monkeypatch.setattr("src.main.getpass", lambda prompt="": ACCEPTED)
 
     fake = FakeClient(
         outcomes=[
@@ -151,8 +165,84 @@ async def test_qr_login_prompts_for_the_two_step_password(logger, monkeypatch):
 
     assert await _login(_as_client(fake), logger, "qr") == 0
 
-    assert fake.passwords == ["hunter2"]
+    assert fake.passwords == [ACCEPTED]
     assert fake.qr.recreated == 0
+
+
+def _prompts(monkeypatch, values: list[str]) -> None:
+    queue = list(values)
+
+    monkeypatch.setattr("src.main.getpass", lambda prompt="": queue.pop(0))
+
+
+async def test_qr_login_retries_a_rejected_password(logger, monkeypatch):
+    _prompts(monkeypatch, ["typo", ACCEPTED])
+
+    fake = FakeClient(
+        accepted_password=ACCEPTED,
+        outcomes=[errors.SessionPasswordNeededError(request=None)],
+    )
+
+    assert await _login(_as_client(fake), logger, "qr") == 0
+
+    assert fake.passwords == ["typo", ACCEPTED]
+
+
+async def test_qr_login_stops_asking_after_the_last_attempt(logger, monkeypatch):
+    _prompts(monkeypatch, ["a", "b", "c", "never asked"])
+
+    fake = FakeClient(
+        accepted_password=ACCEPTED,
+        outcomes=[errors.SessionPasswordNeededError(request=None)],
+    )
+
+    assert await _login(_as_client(fake), logger, "qr") == 1
+
+    assert fake.passwords == ["a", "b", "c"]
+    assert fake.disconnected is True
+
+
+async def test_qr_login_does_not_send_an_empty_password(logger, monkeypatch):
+    _prompts(monkeypatch, ["", ACCEPTED])
+
+    fake = FakeClient(
+        accepted_password=ACCEPTED,
+        outcomes=[errors.SessionPasswordNeededError(request=None)],
+    )
+
+    assert await _login(_as_client(fake), logger, "qr") == 0
+
+    assert fake.passwords == [ACCEPTED]
+
+
+async def test_pending_password_session_skips_the_qr_code(logger, monkeypatch, capsys):
+    """A scanned code stays accepted: asking for another scan cannot help."""
+    _prompts(monkeypatch, [ACCEPTED])
+
+    fake = FakeClient(
+        accepted_password=ACCEPTED,
+        qr_login_error=errors.SessionPasswordNeededError(request=None),
+    )
+
+    assert await _login(_as_client(fake), logger, "qr") == 0
+
+    assert fake.passwords == [ACCEPTED]
+    assert fake.qr.waits == 0
+    assert "█" not in capsys.readouterr().out
+    assert fake.disconnected is True
+
+
+async def test_pending_password_session_reports_a_lost_password(logger, monkeypatch):
+    _prompts(monkeypatch, ["a", "b", "c"])
+
+    fake = FakeClient(
+        accepted_password=ACCEPTED,
+        qr_login_error=errors.SessionPasswordNeededError(request=None),
+    )
+
+    assert await _login(_as_client(fake), logger, "qr") == 1
+
+    assert fake.disconnected is True
 
 
 async def test_qr_login_short_circuits_an_authorized_session(logger):
