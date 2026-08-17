@@ -11,7 +11,7 @@ from src.bot_api import BotApiClient, BotApiError
 from src.config import Config
 from src.models import StarGiftData
 from src.store import StarGiftsStore
-from src.userbot import send_gift_sticker
+from src.userbot import AUTH_ERRORS, send_gift_sticker
 
 
 class Notifier:
@@ -163,6 +163,9 @@ class Notifier:
 
             return False
 
+        except AUTH_ERRORS:
+            raise
+
         except (BotApiError, errors.RPCError, OSError):
             self._logger.exception("Failed to announce new gift %d", gift.id)
 
@@ -199,6 +202,11 @@ class Notifier:
         gift: StarGiftData,
         sticker: types.Document | None,
     ) -> bool:
+        """Post sticker + text for an upgraded gift; safe to retry.
+
+        The sticker message id is persisted before the text is sent, so a retry
+        never double-posts the sticker.
+        """
         peer = self._upgrades_peer
         chat_id = self._notifications.upgrades_chat_id
 
@@ -209,19 +217,23 @@ class Notifier:
 
             return False
 
-        sticker_message_id: int | None = None
+        sticker_message_id = gift.upgrade_sticker_message_id
 
         try:
-            if sticker is None:
-                self._logger.warning(
-                    "Gift %d has no sticker for its upgrade notification", gift.id
-                )
+            if sticker_message_id is None:
+                if sticker is None:
+                    self._logger.warning(
+                        "Gift %d has no sticker for its upgrade notification", gift.id
+                    )
 
-            else:
-                message = await send_gift_sticker(self._client, peer, sticker)
-                sticker_message_id = message.id
+                else:
+                    message = await send_gift_sticker(self._client, peer, sticker)
+                    sticker_message_id = message.id
 
-                await asyncio.sleep(self._notifications.after_sticker_delay)
+                    await self._store.set_message_ids(
+                        gift.id, upgrade_sticker_message_id=sticker_message_id
+                    )
+                    await asyncio.sleep(self._notifications.after_sticker_delay)
 
             await self._bot_api.send_message(
                 chat_id,
@@ -235,6 +247,9 @@ class Notifier:
             )
 
             return False
+
+        except AUTH_ERRORS:
+            raise
 
         except (BotApiError, errors.RPCError, OSError):
             self._logger.exception("Failed to announce upgrade of gift %d", gift.id)
