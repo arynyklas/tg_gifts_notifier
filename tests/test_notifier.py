@@ -1,7 +1,7 @@
 from typing import cast
 
 import pytest
-from telethon import TelegramClient
+from telethon import TelegramClient, errors
 from telethon.tl import types
 
 from src.bot_api import BotApiClient
@@ -232,3 +232,50 @@ def test_upgrade_text_is_byte_identical(config: Config):
     assert config.texts.upgrades.format(id=1234) == (
         "Gift is upgradable! (<code>1234</code>)"
     )
+
+
+class _RevokedBotApi:
+    async def send_message(
+        self,
+        chat_id: int,
+        text: str,
+        reply_to_message_id: int | None = None,
+    ) -> int:
+        raise errors.SessionRevokedError(request=None)
+
+
+def _revoked_notifier(config: Config, store: StarGiftsStore, logger) -> Notifier:
+    return Notifier(
+        client=cast(TelegramClient, None),
+        bot_api=cast(BotApiClient, _RevokedBotApi()),
+        store=store,
+        cfg=config,
+        notify_peer=cast(types.TypeInputPeer, types.InputPeerEmpty()),
+        upgrades_peer=cast(types.TypeInputPeer, types.InputPeerEmpty()),
+        logger=logger,
+    )
+
+
+async def test_a_revoked_session_propagates_out_of_the_new_gift_announcement(
+    config: Config, logger, tmp_path
+):
+    """`UnauthorizedError` is an `RPCError`, which this path swallows.
+
+    Returning False would retry the announcement forever against a session that
+    can never work again.
+    """
+    store = StarGiftsStore(tmp_path / "star_gifts.json", 0.0, logger)
+    gift = await store.add(_gift(sticker_message_id=1))
+
+    with pytest.raises(errors.SessionRevokedError):
+        await _revoked_notifier(config, store, logger).announce_new_gift(gift, None)
+
+
+async def test_a_revoked_session_propagates_out_of_the_upgrade_announcement(
+    config: Config, logger, tmp_path
+):
+    store = StarGiftsStore(tmp_path / "star_gifts.json", 0.0, logger)
+    gift = await store.add(_gift(upgrade_sticker_message_id=1))
+
+    with pytest.raises(errors.SessionRevokedError):
+        await _revoked_notifier(config, store, logger).announce_upgrade(gift, None)

@@ -395,6 +395,47 @@ async def test_upgrade_sticker_id_is_persisted_separately(tmp_path, logger):
     assert gift.upgrade_sticker_message_id == 9
 
 
+async def test_two_writers_do_not_collide_on_the_temp_file(
+    tmp_path, logger, monkeypatch
+):
+    """A cancelled saver's `to_thread` write can still be running during flush.
+
+    `to_thread` is not cancellable, so both writers can be inside
+    `_write_atomic` at once; with one shared temp name the loser of the
+    `os.replace` race raises `FileNotFoundError` out of shutdown.
+    """
+    path = tmp_path / "star_gifts.json"
+    first = StarGiftsStore(path, 0.0, logger)
+    second = StarGiftsStore(path, 0.0, logger)
+
+    await first.add(_gift(10))
+    await second.add(_gift(20))
+
+    real_write_text = Path.write_text
+    interleaved = False
+
+    def write_text_then_let_the_other_writer_finish(self, data, *args, **kwargs):
+        nonlocal interleaved
+
+        result = real_write_text(self, data, *args, **kwargs)
+
+        if not interleaved:
+            interleaved = True
+
+            second._write_atomic('{"star_gifts": []}')
+
+        return result
+
+    monkeypatch.setattr(Path, "write_text", write_text_then_let_the_other_writer_finish)
+
+    first._write_atomic('{"star_gifts": [{"id": 10}]}')  # must not raise
+
+    monkeypatch.undo()
+
+    assert json.loads(path.read_text(encoding="utf-8"))["star_gifts"][0]["id"] == 10
+    assert not list(tmp_path.glob("*.tmp"))
+
+
 async def test_flush_writes_immediately(tmp_path, logger):
     path = tmp_path / "star_gifts.json"
     store = StarGiftsStore(path, 30.0, logger)
