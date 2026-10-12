@@ -839,10 +839,22 @@ async def test_a_lost_session_behind_a_flood_wait_exits_two(
 async def test_a_data_file_with_wrongly_typed_gift_data_exits_one(
     cfg, logger, data_path, client
 ):
-    """It is reported like malformed JSON instead of escaping `_run`."""
+    """It is reported like malformed JSON, naming the offending field, instead
+    of escaping `_run`.
+    """
     data_path.write_text(
         json.dumps({"version": 2, "star_gifts": [{"id": 1, "price": "x"}]}),
         encoding="utf-8",
     )
+    handler = _RecordingHandler()
+    logger.addHandler(handler)
 
     assert await _start(cfg, logger) == 1
+
+    critical = [r for r in handler.records if r.levelno == logging.CRITICAL]
+
+    assert len(critical) == 1
+    message = critical[0].getMessage()
+
+    assert "Cannot read gift data" in message
+    assert "price" in message

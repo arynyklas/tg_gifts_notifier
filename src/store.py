@@ -101,7 +101,9 @@ class StarGiftsStore:
         except LoadError as ex:
             # `main._run` reports a ValueError as an unreadable data file; the
             # nested sub-errors name the offending gift and field.
-            detail = "".join(traceback.format_exception_only(ex)).strip()
+            detail = "".join(
+                traceback.format_exception_only(ex, show_group=True)
+            ).strip()
 
             raise ValueError(f"invalid gift data: {detail}") from ex
 
