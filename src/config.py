@@ -276,7 +276,7 @@ def is_legacy_layout(path: Path) -> bool:
             path.read_text(encoding=constants.ENCODING)
         )
 
-    except (OSError, UnicodeDecodeError, YAMLError):
+    except (OSError, ValueError, YAMLError):
         return False
 
     return isinstance(data, dict) and _LEGACY_SECTION in data

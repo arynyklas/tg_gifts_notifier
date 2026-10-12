@@ -763,6 +763,26 @@ async def test_a_config_error_never_prints_a_secret(
     assert secret not in out + err
 
 
+async def test_a_duplicate_key_is_reported_without_quoting_either_value(
+    tmp_path, monkeypatch, capsys
+):
+    """ruamel's duplicate-key message quotes both values, so it is replaced."""
+    config_path = tmp_path / "config.yaml"
+    config_path.write_text(
+        'userbot:\n  api_hash: "FAKE-SECRET-ONE"\n  api_hash: "FAKE-SECRET-TWO"\n',
+        encoding="utf-8",
+    )
+
+    monkeypatch.setattr(sys, "argv", ["src.main", "--config", str(config_path)])
+
+    assert await main.main() == 1
+
+    out, err = capsys.readouterr()
+
+    assert "duplicate key at line 3, column 3" in err
+    assert "FAKE-SECRET" not in out + err
+
+
 async def test_a_missing_config_file_is_reported_by_its_path(
     tmp_path, monkeypatch, capsys
 ):

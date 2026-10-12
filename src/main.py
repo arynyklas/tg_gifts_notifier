@@ -13,6 +13,7 @@ from zoneinfo import ZoneInfo
 
 from dature.errors import DatureConfigError
 import qrcode
+from ruamel.yaml.constructor import DuplicateKeyError
 from telethon import TelegramClient, errors
 
 from src import constants
@@ -568,7 +569,15 @@ def _report_config_error(path: Path, ex: DatureConfigError) -> int:
         print(f"Invalid config {path}:", file=sys.stderr)
 
         for error in ex.exceptions:
-            print(error, file=sys.stderr)
+            if isinstance(error, DuplicateKeyError):
+                mark = error.problem_mark
+                print(
+                    f"  duplicate key at line {mark.line + 1}, column {mark.column + 1}",
+                    file=sys.stderr,
+                )
+
+            else:
+                print(error, file=sys.stderr)
 
         # dature shows at most 7 errors and adds a note on how many it left out.
         for note in getattr(ex, "__notes__", ()):

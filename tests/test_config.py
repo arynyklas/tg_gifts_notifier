@@ -202,8 +202,15 @@ def test_a_2x_config_is_recognized(tmp_path):
 
 @pytest.mark.parametrize(
     "content",
-    [None, "userbot:\n  api_id: 1\n", "- telegram\n", "telegram: [\n", b"\xff\xfe"],
-    ids=["missing", "3.x", "list", "broken-yaml", "not-utf-8"],
+    [
+        None,
+        "userbot:\n  api_id: 1\n",
+        "- telegram\n",
+        "telegram: [\n",
+        b"\xff\xfe",
+        "x: 2024-02-30\n",
+    ],
+    ids=["missing", "3.x", "list", "broken-yaml", "not-utf-8", "bad-date"],
 )
 def test_anything_else_is_not_taken_for_a_2x_config(tmp_path, content):
     """The check runs while reporting a load error, so it must never raise."""
