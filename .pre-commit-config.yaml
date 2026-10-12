@@ -34,3 +34,10 @@ repos:
         types_or: [python, pyi]
         args: [--select=S]
         pass_filenames: true
+
+      - id: config-schema
+        name: regenerate config.schema.json and the README key table
+        entry: uv run python -m scripts.generate_config_schema
+        language: system
+        files: ^(src/config(_schema|_validators)?\.py|config\.schema\.json|README\.md)$
+        pass_filenames: false

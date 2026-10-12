@@ -23,6 +23,7 @@ dev = [
     "pre-commit>=4.0.1",
 ]
 tests = [
+    "jsonschema>=4.26.0",
     "pytest>=9.0.2",
     "pytest-asyncio>=1.4.0",
 ]

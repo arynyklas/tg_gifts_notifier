@@ -46,6 +46,8 @@ A userbot (Telethon, MTProto layer 227) polls `payments.getStarGifts`; the confi
     cp config.example.yaml config.yaml
     ```
 
+    Its first line binds `config.schema.json`, so VS Code with the [YAML extension](https://marketplace.visualstudio.com/items?itemName=redhat.vscode-yaml) (`redhat.vscode-yaml`) completes keys, shows each key's description on hover, and flags unknown keys, wrong types and out-of-range values as you type. Timezones and template placeholders are checked when the notifier starts.
+
 5. Provide an authorized userbot session, either by converting an existing pyrogram/pyrofork one:
 
     ```sh
@@ -112,38 +114,53 @@ uv lock --check
 
 CI runs the same commands, except that its `uv sync --locked` stands in for `uv lock --check`. The type-check job is advisory: it is marked `continue-on-error` while `ty` is pre-1.0, so a green CI run does not mean the type check passed.
 
+`config.schema.json` and the key table under [Configuration](#configuration) are generated from `src/config.py`; run `uv run python -m scripts.generate_config_schema` after changing it. The pre-commit hook does this, and the tests fail while either file is stale.
+
 ## Configuration
 
-`config.yaml` is validated on startup; unknown keys are rejected.
+`config.yaml` is validated on startup: unknown keys, wrong types and broken templates are rejected, and every error names its key and line without echoing the value. This table and `config.schema.json` are generated from `src/config.py`.
 
-| Key | Type | Description |
-| --- | --- | --- |
-| `telegram.api_id` | Integer | Telegram API ID from my.telegram.org |
-| `telegram.api_hash` | String | Telegram API hash matching the API ID |
-| `telegram.session_path` | String | Path of the Telethon session file (default `sessions/userbot.session`) |
-| `telegram.flood_sleep_threshold` | Integer | Flood waits shorter than this are slept through by Telethon (seconds) |
-| `telegram.bot_tokens` | [String] | Bot tokens from [BotFather](https://t.me/BotFather) used to send and edit messages; at least one is required |
-| `telegram.bot_api_base_url` | String | Bot API base URL; must be `https`, or `http` only for a local Bot API server (`localhost`, `127.0.0.1`, `[::1]`) |
-| `telegram.request_timeout` | Float | Bot API request timeout in seconds |
-| `detector.check_interval` | Float | Delay between gift catalog polls (seconds) |
-| `detector.updates_batch_delay` | Float | Delay between batches of stock-update edits (seconds) |
-| `detector.check_upgrades_interval` | Float | Delay between upgradability check cycles (seconds) |
-| `detector.upgrades_check_concurrency` | Integer | Concurrent upgradability probes (≥ 1) |
-| `detector.announce_retry_max_delay` | Float | Upper bound of the backoff for retrying a failed announcement (seconds) |
-| `storage.data_filepath` | String | Path of the gift data file |
-| `storage.save_debounce` | Float | Debounce before the data file is rewritten (seconds) |
-| `notifications.chat_id` | Integer | Chat where new gift messages are posted |
-| `notifications.upgrades_chat_id` | Integer or `null` | Chat where upgrade messages are posted; `null` disables upgrade checks, so new gifts are never probed and enabling the chat later announces every gift that became upgradable in the meantime |
-| `notifications.after_sticker_delay` | Float | Delay after sending a sticker, before sending its text (seconds) |
-| `notifications.after_text_delay` | Float | Delay after sending a text (seconds) |
-| `notifications.timezone` | String | Timezone of the rendered timestamps (e.g. `Europe/Moscow`) |
-| `logging.console_level` | String or Integer | Console log level (e.g. `DEBUG`) |
-| `logging.file_level` | String or Integer | File log level |
-| `logging.telethon_level` | String or Integer | Level for Telethon's own loggers, kept separate from ours (default `WARNING`; set to `DEBUG` to debug MTProto) |
-| `logging.filepath` | String | Log file path |
-| `logging.max_bytes` | Integer | Size at which the log file is rotated |
-| `logging.backup_count` | Integer | Number of rotated log files kept |
-| `texts.*` | String | Notification templates; see `config.example.yaml` for every placeholder |
+<!-- config-table:start -->
+| Key | Type | Default | Description |
+| --- | --- | --- | --- |
+| `userbot.api_id` | Integer | required | Telegram API ID from my.telegram.org. |
+| `userbot.api_hash` | String | required | Telegram API hash matching `api_id`. |
+| `userbot.session_path` | Path | `"sessions/userbot.session"` | Telethon session file. |
+| `userbot.flood_sleep_threshold` | Integer | `60` | Flood waits shorter than this many seconds are slept through by Telethon. |
+| `bot_api.tokens` | List of strings | required | Bot tokens from @BotFather; requests rotate through them. At least one. |
+| `bot_api.base_url` | String | `"https://api.telegram.org"` | Bot API server: `https`, or `http` only for a local server (`localhost`, `127.0.0.1`, `[::1]`). |
+| `bot_api.request_timeout` | Number | `20.0` | Bot API request timeout, in seconds. |
+| `detector.check_interval` | Number | `1.0` | Delay between gift catalog polls, in seconds. |
+| `detector.updates_batch_delay` | Number | `1.0` | Delay between batches of stock-update edits, in seconds. |
+| `detector.announce_retry_max_delay` | Number | `60.0` | Upper bound of the backoff for retrying a failed announcement, in seconds. |
+| `storage.data_filepath` | Path | `"star_gifts.json"` | Path of the gift data file. |
+| `storage.save_debounce` | Number | `2.0` | Debounce before the data file is rewritten, in seconds. |
+| `notifications.chat_id` | Integer | required | Chat where new gift messages are posted. |
+| `notifications.after_sticker_delay` | Number | `1.0` | Delay after posting a sticker, before its text, in seconds. Paces upgrade posts too. |
+| `notifications.after_text_delay` | Number | `2.0` | Delay after posting a text, in seconds. Paces upgrade posts too. |
+| `notifications.timezone` | String | `"UTC"` | IANA timezone of the rendered timestamps and of `--save-only` dump names (e.g. `Europe/Moscow`). |
+| `upgrades.chat_id` | Integer or `null` | `null` | Chat where upgrade messages are posted; `null` disables upgrade checks. |
+| `upgrades.check_interval` | Number | `2.0` | Delay between upgradability check cycles, in seconds. |
+| `upgrades.check_concurrency` | Integer | `4` | Concurrent upgradability probes; `--save-only` and a data file migration use it even with upgrades off. |
+| `upgrades.text` | String | `"Gift is upgradable! (<code>{id}</code>)"` | Upgrade message (HTML). Placeholders: `{id}`. |
+| `logging.telethon_level` | One of `DEBUG`, `INFO`, `WARNING`, `ERROR`, `CRITICAL` | `"WARNING"` | Level of Telethon's own loggers, kept apart from ours; `DEBUG` to debug MTProto. |
+| `logging.console.level` | One of `DEBUG`, `INFO`, `WARNING`, `ERROR`, `CRITICAL` | `"INFO"` | Console log level. |
+| `logging.file.level` | One of `DEBUG`, `INFO`, `WARNING`, `ERROR`, `CRITICAL` | `"INFO"` | File log level. |
+| `logging.file.path` | Path | `"logs/main.log"` | Log file path. |
+| `logging.file.max_bytes` | Integer | `10485760` | Size at which the log file is rotated, in bytes. |
+| `logging.file.backup_count` | Integer | `5` | Number of rotated log files kept. |
+| `texts.new_gift` | String | required | New gift message. Placeholders: `{title}`, `{number}`, `{id}`, `{total_amount}`, `{available_amount}`, `{sold_out}`, `{price}`, `{convert_price}`, `{require_premium_or_user_limited}`. |
+| `texts.title.limited` | String | required | Inserted as `{title}` for a limited gift. |
+| `texts.title.regular` | String | required | Inserted as `{title}` for an unlimited gift. |
+| `texts.total_amount` | String | required | Inserted as `{total_amount}` for a limited gift. Placeholders: `{total_amount}`. |
+| `texts.available_amount` | String | required | Inserted as `{available_amount}` for a limited gift. Placeholders: `{available_amount}`, `{same_str}`, `{available_percentage}`, `{updated_datetime}`. |
+| `texts.sold_out` | String | required | Inserted as `{sold_out}` once a gift is sold out. Placeholders: `{sold_out}`. |
+| `texts.requirements.template` | String | required | Layout of the line. Placeholders: `{emoji}`, `{require_premium}`, `{separator}`, `{user_limited}`. |
+| `texts.requirements.emoji` | String | required | Inserted as `{emoji}`. |
+| `texts.requirements.premium` | String | required | Inserted as `{require_premium}` when the gift needs Telegram Premium. |
+| `texts.requirements.user_limited` | String | required | Inserted as `{user_limited}` when the gift is limited per user. Placeholders: `{user_limited}`. |
+| `texts.requirements.separator` | String | required | Inserted as `{separator}` when both parts are present. |
+<!-- config-table:end -->
 
 Bots cannot check gift upgradability — Telegram answers `400 BOT_METHOD_INVALID` — which is why the userbot performs those probes.
 

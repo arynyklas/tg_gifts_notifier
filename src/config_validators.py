@@ -1,4 +1,8 @@
-"""dature predicates for the config checks that `V` cannot express."""
+"""dature predicates for the config checks that `V` cannot express.
+
+`src.config_schema` maps every predicate used in `src.config` to JSON Schema,
+so a new predicate class has to be taught there as well.
+"""
 
 from collections.abc import Callable
 from dataclasses import dataclass
@@ -12,6 +16,13 @@ from dature.validators.predicate import Predicate
 # this machine is allowed to be reached without TLS. `urlsplit` strips the
 # brackets of an IPv6 host, so `::1` is the form seen here.
 _LOCAL_HOSTS = frozenset({"localhost", "127.0.0.1", "::1"})
+
+# The editor-side form of `is_secure_url`, for `config.schema.json`. It may
+# reject more (an upper-case scheme, userinfo) but must never accept a URL that
+# `is_secure_url` rejects; `tests/test_config_schema.py` pins that.
+SECURE_URL_PATTERN = (
+    r"^(https://|http://(localhost|127\.0\.0\.1|\[::1\])(:[0-9]+)?(/|$))"
+)
 
 
 def is_secure_url(value: str) -> bool:
