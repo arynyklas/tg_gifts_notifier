@@ -7,7 +7,7 @@ about its bytes and contents, not about which helpers were called.
 from argparse import Namespace
 import asyncio
 from collections.abc import Callable, Iterator
-from dataclasses import asdict
+from dataclasses import asdict, replace
 from datetime import UTC, datetime, tzinfo
 import json
 import logging
@@ -20,7 +20,6 @@ from typing import Self, cast
 import pytest
 from telethon import TelegramClient, errors
 from telethon.tl import functions, types
-import yaml
 
 from src import constants, main
 from src.config import Config
@@ -280,10 +279,7 @@ def data_path(tmp_path) -> Path:
 
 @pytest.fixture
 def cfg(config, data_path) -> Config:
-    raw = config.model_dump()
-    raw["storage"]["data_filepath"] = data_path
-
-    return Config.model_validate(raw)
+    return replace(config, storage=replace(config.storage, data_filepath=data_path))
 
 
 @pytest.fixture
@@ -533,12 +529,11 @@ class _RecordingHandler(logging.Handler):
 
 
 async def test_an_unexpected_startup_error_is_logged_with_its_traceback(
-    cfg, logger, tmp_path, client, monkeypatch
+    logger, client, monkeypatch, config_file, data_path
 ):
     """Only RuntimeError was caught, so anything else bypassed the log file."""
-    config_path = tmp_path / "config.yaml"
-    config_path.write_text(
-        yaml.safe_dump(cfg.model_dump(mode="json")), encoding="utf-8"
+    config_path = config_file(
+        {"storage.data_filepath": data_path.as_posix(), "storage.save_debounce": 0.0}
     )
     handler = _RecordingHandler()
     logger.addHandler(handler)
@@ -561,15 +556,14 @@ async def test_an_unexpected_startup_error_is_logged_with_its_traceback(
 
 
 def test_ctrl_c_during_the_save_only_baseline_exits_zero_and_keeps_the_data_file(
-    cfg, logger, data_path, tmp_path, client, monkeypatch, default_sigint
+    logger, data_path, client, monkeypatch, default_sigint, config_file
 ):
     """The interrupt used to flush a catalog with nothing marked upgradable.
 
     It also escaped as a KeyboardInterrupt traceback with exit 0xC000013A.
     """
-    config_path = tmp_path / "config.yaml"
-    config_path.write_text(
-        yaml.safe_dump(cfg.model_dump(mode="json")), encoding="utf-8"
+    config_path = config_file(
+        {"storage.data_filepath": data_path.as_posix(), "storage.save_debounce": 0.0}
     )
     legacy = _write_legacy(data_path, upgradable=True)
     interrupted: list[bool] = []
@@ -736,17 +730,31 @@ async def test_detection_recovers_a_poll_stuck_in_a_failed_reconnect(
     assert announced
 
 
+@pytest.mark.parametrize(
+    ("key", "value", "secret"),
+    [
+        pytest.param(
+            "bot_api.tokenz",
+            "123456:SECRET-IN-A-MISTYPED-KEY",
+            "SECRET-IN-A-MISTYPED-KEY",
+            id="mistyped-key",
+        ),
+        pytest.param(
+            "userbot.api_hash",
+            ["SECRET-IN-A-WRONG-TYPE"],
+            "SECRET-IN-A-WRONG-TYPE",
+            id="wrong-type",
+        ),
+    ],
+)
 async def test_a_config_error_never_prints_a_secret(
-    example_config_dict, tmp_path, monkeypatch, capsys
+    config_file, monkeypatch, capsys, key, value, secret
 ):
-    """`extra="forbid"` and type errors put the offending value in the message."""
-    token = "123456:SECRET-IN-A-MISTYPED-KEY"
-    api_hash = "SECRET-IN-A-WRONG-TYPE"
-    raw = example_config_dict
-    raw["telegram"]["bot_tokenz"] = token
-    raw["telegram"]["api_hash"] = [api_hash]
-    config_path = tmp_path / "config.yaml"
-    config_path.write_text(yaml.safe_dump(raw), encoding="utf-8")
+    """dature reports an unknown key only once everything else loads.
+
+    That is why each case gets a load of its own.
+    """
+    config_path = config_file({key: value})
 
     monkeypatch.setattr(sys, "argv", ["src.main", "--config", str(config_path)])
 
@@ -754,10 +762,39 @@ async def test_a_config_error_never_prints_a_secret(
 
     out, err = capsys.readouterr()
 
-    assert "telegram -> bot_tokenz" in err
-    assert "telegram -> api_hash" in err
-    assert token not in out + err
-    assert api_hash not in out + err
+    assert f"[{key}]" in err
+    assert secret not in out + err
+
+
+async def test_a_missing_config_file_is_reported_by_its_path(
+    tmp_path, monkeypatch, capsys
+):
+    config_path = tmp_path / "absent.yaml"
+
+    monkeypatch.setattr(sys, "argv", ["src.main", "--config", str(config_path)])
+
+    assert await main.main() == 1
+    assert capsys.readouterr().err == f"Config file not found: {config_path}\n"
+
+
+async def test_errors_beyond_the_seventh_are_counted(config_file, monkeypatch, capsys):
+    """dature prints seven error blocks and puts the count of the rest in a note."""
+    keys = [
+        "detector.check_interval",
+        "detector.updates_batch_delay",
+        "detector.announce_retry_max_delay",
+        "storage.save_debounce",
+        "notifications.after_sticker_delay",
+        "notifications.after_text_delay",
+        "upgrades.check_interval",
+        "bot_api.request_timeout",
+    ]
+    config_path = config_file(dict.fromkeys(keys, "x"))
+
+    monkeypatch.setattr(sys, "argv", ["src.main", "--config", str(config_path)])
+
+    assert await main.main() == 1
+    assert "... and 1 more errors (8 total)" in capsys.readouterr().err
 
 
 async def test_strict_probing_never_records_a_failed_probe(logger, monkeypatch):

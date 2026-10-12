@@ -1,4 +1,5 @@
 from collections.abc import Callable, Iterator
+from dataclasses import replace
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import json
 import logging
@@ -11,7 +12,7 @@ import pytest
 
 from src import bot_api
 from src.bot_api import BotApiClient, BotApiError, _redact
-from src.config import Config, TelegramConfig
+from src.config import Config
 
 Responder = Callable[[str, dict], tuple[int, object]]
 
@@ -85,15 +86,12 @@ def serve(config: Config, logger) -> Iterator[Callable[..., BotApiClient]]:
         servers.append(server)
         server.__enter__()
 
-        overrides: dict[str, object] = {"bot_api_base_url": server.base_url}
+        bot_api_cfg = replace(config.bot_api, base_url=server.base_url)
 
         if tokens is not None:
-            overrides["bot_tokens"] = tokens
+            bot_api_cfg = replace(bot_api_cfg, tokens=tuple(tokens))
 
-        telegram = TelegramConfig.model_validate(
-            config.telegram.model_dump() | overrides
-        )
-        client = BotApiClient(telegram, logger)
+        client = BotApiClient(bot_api_cfg, logger)
 
         clients.append(client)
         setattr(client, "server", server)  # noqa: B010
@@ -302,7 +300,7 @@ async def test_exhausted_attempts_raise_the_last_error(serve):
 
     assert excinfo.value.code == 502
     assert excinfo.value.description == "Bad Gateway 3"
-    assert len(client.server.calls) == 3  # max(3, len(bot_tokens))
+    assert len(client.server.calls) == 3  # max(3, len(tokens))
 
 
 async def test_persistent_rate_limit_skips_the_sleep_after_the_last_attempt(
@@ -467,15 +465,13 @@ async def test_transport_failures_never_log_the_bot_token(config: Config):
     logger.setLevel(logging.DEBUG)
     logger.propagate = False
 
-    telegram = TelegramConfig.model_validate(
-        config.telegram.model_dump()
-        | {
-            "bot_tokens": [token],
-            "bot_api_base_url": "https://127.0.0.1:9",
-            "request_timeout": 2.0,
-        }
+    bot_api_cfg = replace(
+        config.bot_api,
+        tokens=(token,),
+        base_url="https://127.0.0.1:9",
+        request_timeout=2.0,
     )
-    client = BotApiClient(telegram, logger)
+    client = BotApiClient(bot_api_cfg, logger)
 
     try:
         with pytest.raises(BotApiError):

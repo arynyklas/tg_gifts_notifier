@@ -4,7 +4,7 @@ import logging
 import pytest
 
 from src import constants
-from src.config import LoggingConfig
+from src.config import ConsoleLogConfig, FileLogConfig, LoggingConfig
 from src.logger import get_logger
 
 _NAMES = (
@@ -47,13 +47,10 @@ def test_telethon_children_are_clamped_below_our_own_level(tmp_path):
 
     logger = get_logger(
         name,
-        LoggingConfig.model_validate(
-            {
-                "console_level": "DEBUG",
-                "file_level": "DEBUG",
-                "telethon_level": "WARNING",
-                "filepath": tmp_path / "main.log",
-            }
+        LoggingConfig(
+            telethon_level="WARNING",
+            console=ConsoleLogConfig(level="DEBUG"),
+            file=FileLogConfig(level="DEBUG", path=tmp_path / "main.log"),
         ),
     )
 
@@ -76,13 +73,10 @@ def test_telethon_level_can_be_opened_up(tmp_path):
 
     get_logger(
         name,
-        LoggingConfig.model_validate(
-            {
-                "console_level": "DEBUG",
-                "file_level": "DEBUG",
-                "telethon_level": "DEBUG",
-                "filepath": tmp_path / "main.log",
-            }
+        LoggingConfig(
+            telethon_level="DEBUG",
+            console=ConsoleLogConfig(level="DEBUG"),
+            file=FileLogConfig(level="DEBUG", path=tmp_path / "main.log"),
         ),
     )
 
@@ -94,7 +88,7 @@ def test_telethon_level_can_be_opened_up(tmp_path):
 def test_repeated_calls_do_not_duplicate_handlers(tmp_path):
     name = "tests_logger_idempotent"
 
-    cfg = LoggingConfig.model_validate({"filepath": tmp_path / "main.log"})
+    cfg = LoggingConfig(file=FileLogConfig(path=tmp_path / "main.log"))
 
     first = get_logger(name, cfg)
     second = get_logger(name, cfg)

@@ -1,64 +1,82 @@
-import logging
 from pathlib import Path
 
-from pydantic import ValidationError
+from dature.errors import DatureConfigError, StrictModeError
 import pytest
-import yaml
 
 from src.config import Config
 
-EXAMPLE_PATH = Path(__file__).resolve().parents[1] / "config.example.yaml"
+EXAMPLE_CONFIG_PATH = Path(__file__).resolve().parents[1] / "config.example.yaml"
 
 
-def _example_dict() -> dict:
-    return yaml.safe_load(EXAMPLE_PATH.read_text(encoding="utf-8"))
+def _errors(path: Path) -> list[str]:
+    """The `[key]  message` line of every error the load reports."""
+    with pytest.raises(DatureConfigError) as excinfo:
+        Config.load(path)
 
-
-def _write(tmp_path: Path, raw: dict) -> Path:
-    path = tmp_path / "config.yaml"
-    path.write_text(yaml.safe_dump(raw, allow_unicode=True), encoding="utf-8")
-
-    return path
+    return [str(error).splitlines()[0].strip() for error in excinfo.value.exceptions]
 
 
 def test_example_config_loads():
-    cfg = Config.load(EXAMPLE_PATH)
+    cfg = Config.load(EXAMPLE_CONFIG_PATH)
 
-    assert cfg.telegram.api_id == 1234
+    assert cfg.userbot.api_id == 1234
+    assert cfg.bot_api.tokens == ("1234:abcd", "2345:bcda", "3456:cdef")
     assert cfg.notifications.chat_id == -1002452764624
+    assert cfg.upgrades.chat_id == -1002751596218
     assert cfg.storage.data_filepath == Path("star_gifts.json")
-    assert cfg.texts.notify.startswith("{title}")
+    assert cfg.logging.console.level == "DEBUG"
+    assert cfg.texts.new_gift.startswith("{title}")
+    assert cfg.texts.requirements.emoji == "✨"
 
 
-def test_log_level_names_are_coerced_to_numbers():
-    cfg = Config.load(EXAMPLE_PATH)
+@pytest.mark.parametrize(
+    ("edits", "delete"),
+    [
+        pytest.param({}, ("upgrades",), id="section-omitted"),
+        pytest.param({"upgrades.chat_id": None}, (), id="chat-id-null"),
+    ],
+)
+def test_upgrades_are_off_without_a_chat(config_file, edits, delete):
+    upgrades = Config.load(config_file(edits, delete=delete)).upgrades
 
-    assert cfg.logging.console_level == logging.DEBUG
-    assert cfg.logging.file_level == logging.INFO
-
-
-def test_unknown_top_level_key_is_rejected(tmp_path):
-    raw = _example_dict()
-    raw["unexpected"] = 1
-
-    with pytest.raises(ValidationError):
-        Config.load(_write(tmp_path, raw))
-
-
-def test_empty_bot_tokens_is_rejected(tmp_path):
-    raw = _example_dict()
-    raw["telegram"]["bot_tokens"] = []
-
-    with pytest.raises(ValidationError):
-        Config.load(_write(tmp_path, raw))
+    assert upgrades.chat_id is None
+    assert upgrades.check_concurrency == 4
+    assert upgrades.text == "Gift is upgradable! (<code>{id}</code>)"
 
 
-def test_unknown_timezone_is_rejected(tmp_path):
-    raw = _example_dict()
-    raw["notifications"]["timezone"] = "Mars/Phobos"
+def test_integers_are_accepted_for_float_fields(config_file):
+    """JSON Schema's `number` accepts `1`, so the loader has to as well."""
+    cfg = Config.load(config_file({"detector.check_interval": 1}))
 
-    with pytest.raises(ValidationError):
-        Config.load(_write(tmp_path, raw))
+    assert cfg.detector.check_interval == 1.0
+    assert isinstance(cfg.detector.check_interval, float)
+
+
+@pytest.mark.parametrize(
+    ("key", "value", "message"),
+    [
+        ("bot_api.tokens", [], "Value length must be greater than or equal to 1"),
+        ("bot_api.base_url", "http://api.telegram.org", "must use https"),
+        ("bot_api.base_url", "http://192.168.1.10:8081", "must use https"),
+        ("bot_api.base_url", "api.telegram.org", "must use https"),
+        ("bot_api.base_url", "ftp://api.telegram.org", "must use https"),
+        ("bot_api.base_url", "http://[::1", "must use https"),
+        ("notifications.timezone", "Mars/Phobos", "unknown timezone"),
+        ("logging.console.level", "debug", "Invalid variant"),
+        ("upgrades.check_concurrency", 0, "greater than or equal to 1"),
+        ("detector.check_interval", True, "expected a number, got bool"),
+        ("upgrades", None, "Expected Mapping"),
+        # dature 1.6 drops the key for a float or bool in an `int | None` field;
+        # `_optional_int` restores it.
+        ("upgrades.chat_id", 1.5, "expected an integer or null, got float"),
+        ("upgrades.chat_id", True, "expected an integer or null, got bool"),
+    ],
+)
+def test_invalid_values_are_reported_with_their_key(config_file, key, value, message):
+    (error,) = _errors(config_file({key: value}))
+
+    assert error.startswith(f"[{key}]")
+    assert message in error
 
 
 @pytest.mark.parametrize(
@@ -71,26 +89,72 @@ def test_unknown_timezone_is_rejected(tmp_path):
         "http://[::1]:8081",
     ],
 )
-def test_accepted_bot_api_base_urls(tmp_path, url):
-    raw = _example_dict()
-    raw["telegram"]["bot_api_base_url"] = url
+def test_accepted_bot_api_base_urls(config_file, url):
+    assert Config.load(config_file({"bot_api.base_url": url})).bot_api.base_url == url
 
-    assert Config.load(_write(tmp_path, raw)).telegram.bot_api_base_url == url
+
+@pytest.mark.parametrize("key", ["unexpected", "logging.file.filepath"])
+def test_unknown_keys_are_rejected(config_file, key):
+    path = config_file({key: 1})
+
+    with pytest.raises(StrictModeError) as excinfo:
+        Config.load(path)
+
+    (error,) = excinfo.value.exceptions
+
+    assert str(error).strip().startswith(f"[{key}]")
+
+
+def test_a_missing_required_key_is_reported(config_file):
+    assert _errors(config_file(delete=("notifications.chat_id",))) == [
+        "[notifications.chat_id]  Missing required field"
+    ]
+
+
+def test_template_text_is_kept_verbatim(config_file):
+    """Env expansion would rewrite `$NAME` and `%NAME%`, and `$$` to `$`."""
+    text = "Costs $HOME %PATH% $$5 100%"
+
+    cfg = Config.load(config_file({"texts.title.regular": text}))
+
+    assert cfg.texts.title.regular == text
 
 
 @pytest.mark.parametrize(
-    "url",
+    ("key", "value"),
     [
-        "http://api.telegram.org",
-        "http://192.168.1.10:8081",
-        "api.telegram.org",
-        "ftp://api.telegram.org",
+        pytest.param("userbot.api_hsh", "deadbeef-secret", id="unknown-key"),
+        # dature does not mask the message of a custom type loader.
+        pytest.param("upgrades.chat_id", "-100-deadbeef-secret", id="custom-loader"),
     ],
 )
-def test_plaintext_bot_api_base_urls_are_rejected(tmp_path, url):
-    """A plaintext request line would carry the bot token."""
-    raw = _example_dict()
-    raw["telegram"]["bot_api_base_url"] = url
+def test_a_rejected_value_is_never_echoed(config_file, key, value):
+    """A typo in a secret-bearing key would otherwise print the secret."""
+    path = config_file({key: value})
 
-    with pytest.raises(ValidationError, match="must use https"):
-        Config.load(_write(tmp_path, raw))
+    with pytest.raises(DatureConfigError) as excinfo:
+        Config.load(path)
+
+    rendered = "\n".join(str(error) for error in excinfo.value.exceptions)
+
+    assert f"[{key}]" in rendered
+    assert "deadbeef-secret" not in rendered
+
+
+def test_no_config_is_searched_for_outside_the_given_path(
+    config_file, tmp_path, monkeypatch
+):
+    """dature looks in %APPDATA%, ~/.config and /etc unless told not to."""
+    elsewhere = config_file()
+    workdir = tmp_path / "work"
+    workdir.mkdir()
+
+    for variable in ("APPDATA", "XDG_CONFIG_HOME"):
+        monkeypatch.setenv(variable, str(elsewhere.parent))
+
+    monkeypatch.chdir(workdir)
+
+    with pytest.raises(DatureConfigError) as excinfo:
+        Config.load(Path(elsewhere.name))
+
+    assert [type(error) for error in excinfo.value.exceptions] == [FileNotFoundError]

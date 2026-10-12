@@ -35,6 +35,7 @@ class Detector:
         self._notifier = notifier
         self._store = store
         self._detector_cfg = cfg.detector
+        self._upgrades_cfg = cfg.upgrades
         self._logger = logger
         self._check_upgrades = check_upgrades
 
@@ -44,7 +45,7 @@ class Detector:
         self._retry_at: dict[int, float] = {}
         self._retry_delay: dict[int, float] = {}
         self._probed_at: dict[int, float] = {}
-        self._upgrade_slots = asyncio.Semaphore(cfg.detector.upgrades_check_concurrency)
+        self._upgrade_slots = asyncio.Semaphore(cfg.upgrades.check_concurrency)
         # One reconnect at a time, whichever loop notices the dropped client.
         self._connect_lock = asyncio.Lock()
         self._catalog_ready = asyncio.Event()
@@ -136,7 +137,7 @@ class Detector:
             except (errors.RPCError, OSError):
                 self._logger.exception("Upgrades cycle failed")
 
-            await asyncio.sleep(self._detector_cfg.check_upgrades_interval)
+            await asyncio.sleep(self._upgrades_cfg.check_interval)
 
     async def poll_once(self) -> bool:
         """One catalog poll. Returns whether a fresh payload was processed."""
@@ -363,7 +364,7 @@ async def baseline_upgradability(
     return await probe_upgradable(
         client,
         gift_ids,
-        asyncio.Semaphore(cfg.detector.upgrades_check_concurrency),
+        asyncio.Semaphore(cfg.upgrades.check_concurrency),
         logger,
         strict=True,
     )

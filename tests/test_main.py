@@ -1,4 +1,5 @@
 import asyncio
+from dataclasses import replace
 from types import SimpleNamespace
 from typing import cast
 
@@ -249,16 +250,16 @@ async def test_detect_reports_a_broken_template_as_a_config_error(
     Catching it in `main()` reported a `KeyError` from `connect`, `resolve_peer`
     or `store.load` as a template problem and sent the operator to config.yaml.
     """
-    raw = config.model_dump()
-    raw["texts"]["notify"] = "{title} {nonexistent}"
-
     store = main.StarGiftsStore(tmp_path / "star_gifts.json", 0.0, logger)
 
     monkeypatch.setattr(main, "resolve_peer", _fake_resolve_peer)
     monkeypatch.setattr(main, "BotApiClient", _FakeBotApi)
 
     code = await main._detect(
-        cast(TelegramClient, None), store, main.Config.model_validate(raw), logger
+        cast(TelegramClient, None),
+        store,
+        replace(config, texts=replace(config.texts, new_gift="{title} {nonexistent}")),
+        logger,
     )
 
     assert code == 1

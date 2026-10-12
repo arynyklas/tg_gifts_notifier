@@ -8,20 +8,18 @@ requires-python = ">=3.13"
 dependencies = [
     "telethon>=1.44.0",
     "cryptg>=0.6.0",
-    "pydantic>=2.13.0",
-    "pyyaml>=6.0.3",
     "niquests>=3.21.0",
     "tzdata>=2025.2",
     "qrcode>=8.2",
     "certifi>=2026.7.22",
     "adaptix>=3.0.0b12",
+    "dature[yaml]>=1.6.0,<2",
 ]
 
 [dependency-groups]
 dev = [
     "ruff>=0.16.3",
     "ty>=0.0.72",
-    "types-pyyaml>=6.0.12",
     "pre-commit>=4.0.1",
 ]
 tests = [

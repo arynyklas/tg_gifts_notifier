@@ -8,7 +8,7 @@ import certifi
 import niquests
 from niquests import exceptions as niquests_errors
 
-from src.config import TelegramConfig
+from src.config import BotApiConfig
 
 _BASE_PAYLOAD: dict[str, Any] = {
     "parse_mode": "HTML",
@@ -41,12 +41,12 @@ class BotApiError(Exception):
 
 
 class BotApiClient:
-    def __init__(self, cfg: TelegramConfig, logger: Logger) -> None:
-        self._tokens = list(cfg.bot_tokens)
+    def __init__(self, cfg: BotApiConfig, logger: Logger) -> None:
+        self._tokens = list(cfg.tokens)
         self._cycle = itertools.cycle(self._tokens)
         self._logger = logger
         self._http = niquests.AsyncSession(
-            base_url=cfg.bot_api_base_url,
+            base_url=cfg.base_url,
             timeout=cfg.request_timeout,
             pool_maxsize=len(self._tokens) * 2,
             retries=0,  # token rotation below is the only retry mechanism

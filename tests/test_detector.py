@@ -1,5 +1,6 @@
 import asyncio
 from collections.abc import Awaitable, Callable, Coroutine
+from dataclasses import replace
 from datetime import UTC, datetime
 import gc
 import inspect
@@ -679,7 +680,7 @@ async def test_upgrade_is_announced_once_and_probe_errors_are_skipped(
 
     upgrade_text = bot_api.sent[-1]
 
-    assert upgrade_text["chat_id"] == config.notifications.upgrades_chat_id
+    assert upgrade_text["chat_id"] == config.upgrades.chat_id
     assert (
         upgrade_text["text"] == f"Gift is upgradable! (<code>{GIFT_LIMITED_ID}</code>)"
     )
@@ -791,7 +792,7 @@ async def test_baselined_gifts_are_still_probed_for_upgrades(
 
     assert limited is not None
     assert limited.is_upgradable is True
-    assert bot_api.sent[-1]["chat_id"] == config.notifications.upgrades_chat_id
+    assert bot_api.sent[-1]["chat_id"] == config.upgrades.chat_id
 
 
 async def test_baseline_records_upgradability_without_announcing(
@@ -1766,11 +1767,13 @@ async def test_announcement_retries_back_off_and_stop_at_the_configured_ceiling(
     config, logger, tmp_path, first_payload, monkeypatch
 ):
     """Retries fire at 1s, 2s, 4s — not a tick earlier — and stop doubling."""
-    raw = config.model_dump()
-    raw["detector"]["announce_retry_max_delay"] = 4.0
-
     detector, _, bot_api, store = _build(
-        Config.model_validate(raw), logger, tmp_path, [first_payload]
+        replace(
+            config, detector=replace(config.detector, announce_retry_max_delay=4.0)
+        ),
+        logger,
+        tmp_path,
+        [first_payload],
     )
 
     clock = monotonic()

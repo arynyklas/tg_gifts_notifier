@@ -11,10 +11,9 @@ import time
 from typing import Any, cast
 from zoneinfo import ZoneInfo
 
-from pydantic import ValidationError
+from dature.errors import DatureConfigError
 import qrcode
 from telethon import TelegramClient, errors
-import yaml
 
 from src import constants
 from src.bot_api import BotApiClient
@@ -352,15 +351,15 @@ async def _detect(
 ) -> int:
     notify_peer = await resolve_peer(client, cfg.notifications.chat_id, logger)
     upgrades_peer = (
-        await resolve_peer(client, cfg.notifications.upgrades_chat_id, logger)
-        if cfg.notifications.upgrades_chat_id is not None
+        await resolve_peer(client, cfg.upgrades.chat_id, logger)
+        if cfg.upgrades.chat_id is not None
         else None
     )
 
     if upgrades_peer is None:
         logger.info("Upgrades chat is not set, skipping upgrade checks")
 
-    bot_api = BotApiClient(cfg.telegram, logger)
+    bot_api = BotApiClient(cfg.bot_api, logger)
 
     try:
         notifier = Notifier(
@@ -490,7 +489,7 @@ async def _run(args: argparse.Namespace, cfg: Config, logger: Logger) -> int:
             constants.SCHEMA_VERSION,
         )
 
-    client = build_client(cfg.telegram, logger)
+    client = build_client(cfg.userbot, logger)
 
     try:
         await client.connect()
@@ -531,7 +530,7 @@ async def _run(args: argparse.Namespace, cfg: Config, logger: Logger) -> int:
 
 async def _run_login(mode: str, cfg: Config, logger: Logger) -> int:
     client = build_client(
-        cfg.telegram,
+        cfg.userbot,
         logger,
         # QR login completes only when the `UpdateLoginToken` update arrives.
         receive_updates=mode == _LOGIN_QR,
@@ -561,33 +560,32 @@ async def _run_login(mode: str, cfg: Config, logger: Logger) -> int:
         await client.disconnect()
 
 
+def _report_config_error(path: Path, ex: DatureConfigError) -> int:
+    """Print why `path` did not load; never prints a config value."""
+    if any(isinstance(error, FileNotFoundError) for error in ex.exceptions):
+        print(f"Config file not found: {path}", file=sys.stderr)
+
+    else:
+        print(f"Invalid config {path}:", file=sys.stderr)
+
+        for error in ex.exceptions:
+            print(error, file=sys.stderr)
+
+        # dature shows at most 7 errors and adds a note on how many it left out.
+        for note in getattr(ex, "__notes__", ()):
+            print(note, file=sys.stderr)
+
+    return _EXIT_CONFIG
+
+
 async def main() -> int:
     args = _build_parser().parse_args()
 
     try:
         cfg = Config.load(args.config)
 
-    except FileNotFoundError:
-        print(f"Config file not found: {args.config}", file=sys.stderr)
-
-        return _EXIT_CONFIG
-
-    except ValidationError as ex:
-        # `extra="forbid"` puts the offending value in the message, and a typo in
-        # a secret-bearing key would print the secret.
-        print(f"Invalid config {args.config}:", file=sys.stderr)
-
-        for error in ex.errors(include_input=False, include_url=False):
-            location = " -> ".join(map(str, error["loc"]))
-
-            print(f"  {location}: {error['msg']}", file=sys.stderr)
-
-        return _EXIT_CONFIG
-
-    except (OSError, yaml.YAMLError) as ex:
-        print(f"Invalid config {args.config}: {ex}", file=sys.stderr)
-
-        return _EXIT_CONFIG
+    except DatureConfigError as ex:
+        return _report_config_error(args.config, ex)
 
     logger = get_logger(constants.LOGGER_NAME, cfg.logging)
 

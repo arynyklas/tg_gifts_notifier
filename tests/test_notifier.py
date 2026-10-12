@@ -1,3 +1,4 @@
+from dataclasses import replace
 from typing import cast
 
 import pytest
@@ -97,14 +98,13 @@ def test_validate_texts_accepts_the_example_config(notifier: Notifier):
 
 
 def test_validate_texts_rejects_unknown_placeholder(config: Config, logger):
-    raw = config.model_dump()
-    raw["texts"]["notify"] = "{title} {nonexistent}"
-
     broken = Notifier(
         client=cast(TelegramClient, None),
         bot_api=cast(BotApiClient, None),
         store=cast(StarGiftsStore, None),
-        cfg=Config.model_validate(raw),
+        cfg=replace(
+            config, texts=replace(config.texts, new_gift="{title} {nonexistent}")
+        ),
         notify_peer=cast(types.TypeInputPeer, None),
         upgrades_peer=None,
         logger=logger,
@@ -229,7 +229,7 @@ def test_premium_and_user_limited_text_is_byte_identical(notifier: Notifier):
 
 
 def test_upgrade_text_is_byte_identical(config: Config):
-    assert config.texts.upgrades.format(id=1234) == (
+    assert config.upgrades.text.format(id=1234) == (
         "Gift is upgradable! (<code>1234</code>)"
     )
 

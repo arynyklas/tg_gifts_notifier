@@ -11,7 +11,7 @@ from telethon.errors import common
 from telethon.tl import functions, types
 
 from src import constants, utils
-from src.config import TelegramConfig
+from src.config import UserbotConfig
 from src.models import StarGiftData
 
 
@@ -35,7 +35,7 @@ class ParsedGift:
 
 
 def build_client(
-    cfg: TelegramConfig,
+    cfg: UserbotConfig,
     logger: Logger,
     *,
     receive_updates: bool = False,

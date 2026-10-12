@@ -1,3 +1,4 @@
+from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 import sys
 from typing import cast
@@ -6,7 +7,7 @@ import pytest
 from telethon import TelegramClient, errors
 from telethon.sessions import Session
 
-from src.config import Config, TelegramConfig
+from src.config import Config
 from src.main import _build_parser, _login, _print_qr, _run_login
 from src.userbot import build_client
 
@@ -261,12 +262,10 @@ async def test_phone_login_uses_start_and_disconnects(logger):
 
 def test_qr_login_client_must_receive_updates(config: Config, tmp_path, logger):
     """QRLogin.wait() completes only on an UpdateLoginToken update."""
-    telegram = TelegramConfig.model_validate(
-        config.telegram.model_dump() | {"session_path": tmp_path / "userbot.session"}
-    )
+    userbot = replace(config.userbot, session_path=tmp_path / "userbot.session")
 
-    notifier_client = build_client(telegram, logger)
-    login_client = build_client(telegram, logger, receive_updates=True)
+    notifier_client = build_client(userbot, logger)
+    login_client = build_client(userbot, logger, receive_updates=True)
 
     try:
         assert notifier_client._no_updates is True
@@ -282,12 +281,9 @@ def test_the_session_file_telethon_opens_is_owner_only(
     config: Config, tmp_path, logger
 ):
     """`SQLiteSession` appends `.session` to a path configured without it."""
-    telegram = TelegramConfig.model_validate(
-        config.telegram.model_dump()
-        | {"session_path": tmp_path / "sessions" / "userbot"}
-    )
+    userbot = replace(config.userbot, session_path=tmp_path / "sessions" / "userbot")
 
-    client = build_client(telegram, logger)
+    client = build_client(userbot, logger)
 
     try:
         session_file = tmp_path / "sessions" / "userbot.session"

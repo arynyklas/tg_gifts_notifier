@@ -31,6 +31,7 @@ class Notifier:
         self._store = store
         self._texts = cfg.texts
         self._notifications = cfg.notifications
+        self._upgrades = cfg.upgrades
         self._notify_peer = notify_peer
         self._upgrades_peer = upgrades_peer
         self._timezone = ZoneInfo(cfg.notifications.timezone)
@@ -48,8 +49,8 @@ class Notifier:
                 math.ceil(gift.available_amount / gift.total_amount * 100 * 100) / 100
             )
 
-        return texts.notify.format(
-            title=texts.title_limited if is_limited else texts.title_regular,
+        return texts.new_gift.format(
+            title=texts.title.limited if is_limited else texts.title.regular,
             number=gift.number,
             id=gift.id,
             total_amount=(
@@ -83,22 +84,22 @@ class Notifier:
             price=utils.pretty_int(gift.price),
             convert_price=utils.pretty_int(gift.convert_price),
             require_premium_or_user_limited=(
-                texts.require_premium_or_user_limited.format(
-                    emoji=texts.require_premium_or_user_limited_emoji,
+                texts.requirements.template.format(
+                    emoji=texts.requirements.emoji,
                     require_premium=(
-                        texts.require_premium
+                        texts.requirements.premium
                         if gift.require_premium
                         else constants.NULL_STR
                     ),
                     user_limited=(
-                        texts.user_limited.format(
+                        texts.requirements.user_limited.format(
                             user_limited=utils.pretty_int(gift.user_limited)
                         )
                         if gift.user_limited is not None
                         else constants.NULL_STR
                     ),
                     separator=(
-                        texts.require_premium_and_user_limited_separator
+                        texts.requirements.separator
                         if gift.require_premium and gift.user_limited is not None
                         else constants.NULL_STR
                     ),
@@ -125,7 +126,7 @@ class Notifier:
         )
 
         self.render_gift_text(probe)
-        self._texts.upgrades.format(id=probe.id)
+        self._upgrades.text.format(id=probe.id)
 
     async def announce_new_gift(
         self,
@@ -210,7 +211,7 @@ class Notifier:
         never double-posts the sticker.
         """
         peer = self._upgrades_peer
-        chat_id = self._notifications.upgrades_chat_id
+        chat_id = self._upgrades.chat_id
 
         if peer is None or chat_id is None:
             self._logger.error(
@@ -241,7 +242,7 @@ class Notifier:
 
             await self._bot_api.send_message(
                 chat_id,
-                self._texts.upgrades.format(id=gift.id),
+                self._upgrades.text.format(id=gift.id),
                 reply_to_message_id=sticker_message_id,
             )
 
