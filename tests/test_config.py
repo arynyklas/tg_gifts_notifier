@@ -158,3 +158,36 @@ def test_no_config_is_searched_for_outside_the_given_path(
         Config.load(Path(elsewhere.name))
 
     assert [type(error) for error in excinfo.value.exceptions] == [FileNotFoundError]
+
+
+@pytest.mark.parametrize(
+    ("key", "template"),
+    [
+        ("texts.new_gift", "{title} {nonexistent}"),
+        ("texts.new_gift", "{title} {}"),
+        ("texts.new_gift", "{title:d}"),
+        ("texts.sold_out", "sold out in {sold_out"),
+        ("texts.requirements.user_limited", "{count} per user"),
+        ("upgrades.text", "Upgradable: {gift}"),
+    ],
+)
+def test_broken_templates_are_rejected_at_load(config_file, key, template):
+    (error,) = _errors(config_file({key: template}))
+
+    assert error.startswith(f"[{key}]")
+    assert "must be a str.format template using only" in error
+
+
+def test_format_specs_matching_the_placeholder_type_are_accepted(config_file):
+    """`{number}` and `{id}` are ints when the notifier renders them."""
+    template = "{title} {number:,} {id:>8}"
+
+    cfg = Config.load(config_file({"texts.new_gift": template}))
+
+    assert cfg.texts.new_gift == template
+
+
+def test_the_error_names_the_allowed_placeholders(config_file):
+    (error,) = _errors(config_file({"texts.sold_out": "{when}"}))
+
+    assert error.endswith("using only {sold_out}")

@@ -1,4 +1,3 @@
-from dataclasses import replace
 from typing import cast
 
 import pytest
@@ -91,27 +90,6 @@ def test_only_premium_has_no_separator(notifier: Notifier):
 
     assert "✨ <b>Premium only</b>\n" in text
     assert "per user" not in text
-
-
-def test_validate_texts_accepts_the_example_config(notifier: Notifier):
-    notifier.validate_texts()
-
-
-def test_validate_texts_rejects_unknown_placeholder(config: Config, logger):
-    broken = Notifier(
-        client=cast(TelegramClient, None),
-        bot_api=cast(BotApiClient, None),
-        store=cast(StarGiftsStore, None),
-        cfg=replace(
-            config, texts=replace(config.texts, new_gift="{title} {nonexistent}")
-        ),
-        notify_peer=cast(types.TypeInputPeer, None),
-        upgrades_peer=None,
-        logger=logger,
-    )
-
-    with pytest.raises(KeyError):
-        broken.validate_texts()
 
 
 @pytest.fixture

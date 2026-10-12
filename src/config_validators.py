@@ -2,7 +2,7 @@
 
 from collections.abc import Callable
 from dataclasses import dataclass
-from typing import Any
+from typing import Any, Self
 from urllib.parse import urlsplit
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
@@ -62,3 +62,45 @@ class Timezone(Predicate):
 
     def get_error_message(self) -> str:
         return "unknown timezone"
+
+
+@dataclass(frozen=True, slots=True)
+class Template(Predicate):
+    """A `str.format` template restricted to the given placeholders.
+
+    The template is rendered once with one sample per placeholder, typed as the
+    notifier passes it, so an unknown or positional field, a stray brace or a
+    bad format spec fails at load instead of at the first announcement.
+    """
+
+    samples: tuple[tuple[str, object], ...]
+
+    @classmethod
+    def of(cls, **samples: object) -> Self:
+        return cls(tuple(samples.items()))
+
+    @property
+    def placeholders(self) -> tuple[str, ...]:
+        return tuple(name for name, _ in self.samples)
+
+    def check_type(self, field_type: Any, *, field_path: list[str]) -> None:  # noqa: ANN401
+        return
+
+    def get_validator_func(self) -> Callable[[Any], bool]:
+        samples = dict(self.samples)
+
+        def renders(value: str) -> bool:
+            try:
+                value.format(**samples)
+
+            except (KeyError, IndexError, ValueError, AttributeError, TypeError):
+                return False
+
+            return True
+
+        return renders
+
+    def get_error_message(self) -> str:
+        names = ", ".join(f"{{{name}}}" for name in self.placeholders)
+
+        return f"must be a str.format template using only {names}"

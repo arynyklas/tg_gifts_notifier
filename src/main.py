@@ -372,14 +372,6 @@ async def _detect(
             logger=logger,
         )
 
-        try:
-            notifier.validate_texts()
-
-        except (KeyError, IndexError) as ex:
-            logger.critical("Notification templates are invalid: %s", ex)
-
-            return _EXIT_CONFIG
-
         detector = Detector(
             client=client,
             notifier=notifier,

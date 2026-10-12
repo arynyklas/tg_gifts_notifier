@@ -1,5 +1,4 @@
 import asyncio
-from dataclasses import replace
 from types import SimpleNamespace
 from typing import cast
 
@@ -240,26 +239,3 @@ async def test_detect_exits_two_when_a_task_reports_a_lost_authorization(
     )
 
     assert code == 2
-
-
-async def test_detect_reports_a_broken_template_as_a_config_error(
-    config, logger, tmp_path, monkeypatch
-):
-    """A template `KeyError` must be reported where it is raised.
-
-    Catching it in `main()` reported a `KeyError` from `connect`, `resolve_peer`
-    or `store.load` as a template problem and sent the operator to config.yaml.
-    """
-    store = main.StarGiftsStore(tmp_path / "star_gifts.json", 0.0, logger)
-
-    monkeypatch.setattr(main, "resolve_peer", _fake_resolve_peer)
-    monkeypatch.setattr(main, "BotApiClient", _FakeBotApi)
-
-    code = await main._detect(
-        cast(TelegramClient, None),
-        store,
-        replace(config, texts=replace(config.texts, new_gift="{title} {nonexistent}")),
-        logger,
-    )
-
-    assert code == 1

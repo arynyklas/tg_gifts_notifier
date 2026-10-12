@@ -166,9 +166,6 @@ class FakeNotifier:
         self._announced = announced
         self._done = done
 
-    def validate_texts(self) -> None:
-        pass
-
     async def announce_new_gift(self, gift: StarGiftData, sticker: object) -> bool:
         self._announced.append(gift.id)
 

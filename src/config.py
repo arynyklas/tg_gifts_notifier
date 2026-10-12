@@ -13,7 +13,7 @@ import dature
 from dature import V
 
 from src import constants
-from src.config_validators import SecureUrl, Timezone
+from src.config_validators import SecureUrl, Template, Timezone
 
 LogLevel = Literal["DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"]
 
@@ -115,7 +115,7 @@ class UpgradesConfig:
     """Delay between upgradability check cycles, in seconds."""
     check_concurrency: Annotated[int, V >= 1] = 4
     """Concurrent upgradability probes; `--save-only` and a data file migration use it even with upgrades off."""
-    text: str = "Gift is upgradable! (<code>{id}</code>)"
+    text: Annotated[str, Template.of(id=0)] = "Gift is upgradable! (<code>{id}</code>)"
     """Upgrade message (HTML)."""
 
 
@@ -168,13 +168,16 @@ class TitleTexts:
 class RequirementTexts:
     """Line inserted as `{require_premium_or_user_limited}` when a gift needs Premium or is limited per user."""
 
-    template: str
+    template: Annotated[
+        str,
+        Template.of(emoji="", require_premium="", separator="", user_limited=""),
+    ]
     """Layout of the line."""
     emoji: str
     """Inserted as `{emoji}`."""
     premium: str
     """Inserted as `{require_premium}` when the gift needs Telegram Premium."""
-    user_limited: str
+    user_limited: Annotated[str, Template.of(user_limited="")]
     """Inserted as `{user_limited}` when the gift is limited per user."""
     separator: str
     """Inserted as `{separator}` when both parts are present."""
@@ -184,15 +187,36 @@ class RequirementTexts:
 class TextsConfig:
     """New gift message templates (HTML)."""
 
-    new_gift: str
+    new_gift: Annotated[
+        str,
+        Template.of(
+            title="",
+            number=0,
+            id=0,
+            total_amount="",
+            available_amount="",
+            sold_out="",
+            price="",
+            convert_price="",
+            require_premium_or_user_limited="",
+        ),
+    ]
     """New gift message."""
     title: TitleTexts
     """Title line, inserted as `{title}`."""
-    total_amount: str
+    total_amount: Annotated[str, Template.of(total_amount="")]
     """Inserted as `{total_amount}` for a limited gift."""
-    available_amount: str
+    available_amount: Annotated[
+        str,
+        Template.of(
+            available_amount="",
+            same_str="",
+            available_percentage="",
+            updated_datetime="",
+        ),
+    ]
     """Inserted as `{available_amount}` for a limited gift."""
-    sold_out: str
+    sold_out: Annotated[str, Template.of(sold_out="")]
     """Inserted as `{sold_out}` once a gift is sold out."""
     requirements: RequirementTexts
     """Premium and per-user limit line, inserted as `{require_premium_or_user_limited}`."""

@@ -109,25 +109,6 @@ class Notifier:
             ),
         )
 
-    def validate_texts(self) -> None:
-        """Render every template once so a bad placeholder aborts startup."""
-        probe = StarGiftData(
-            id=0,
-            number=1,
-            price=1,
-            convert_price=1,
-            available_amount=1,
-            total_amount=2,
-            require_premium=True,
-            user_limited=1,
-            is_limited=True,
-            first_appearance_timestamp=1,
-            last_sale_timestamp=2,
-        )
-
-        self.render_gift_text(probe)
-        self._upgrades.text.format(id=probe.id)
-
     async def announce_new_gift(
         self,
         gift: StarGiftData,
