@@ -164,6 +164,36 @@ CI runs the same commands, except that its `uv sync --locked` stands in for `uv 
 
 Bots cannot check gift upgradability — Telegram answers `400 BOT_METHOD_INVALID` — which is why the userbot performs those probes.
 
+### Upgrading from 2.x
+
+The config layout changed: a 2.x `config.yaml` fails to load with a pointer to this section. Move every key that is set to its new place (keys not listed keep their names), then add `# yaml-language-server: $schema=./config.schema.json` as the first line.
+
+| 2.x key | Now |
+| --- | --- |
+| `telegram.api_id`, `telegram.api_hash`, `telegram.session_path`, `telegram.flood_sleep_threshold` | `userbot.*`, same names |
+| `telegram.bot_tokens` | `bot_api.tokens` |
+| `telegram.bot_api_base_url` | `bot_api.base_url` |
+| `telegram.request_timeout` | `bot_api.request_timeout` |
+| `notifications.upgrades_chat_id` | `upgrades.chat_id` |
+| `detector.check_upgrades_interval` | `upgrades.check_interval` |
+| `detector.upgrades_check_concurrency` | `upgrades.check_concurrency` |
+| `texts.upgrades` | `upgrades.text` |
+| `logging.console_level` | `logging.console.level` |
+| `logging.file_level` | `logging.file.level` |
+| `logging.filepath` | `logging.file.path` |
+| `logging.max_bytes` | `logging.file.max_bytes` |
+| `logging.backup_count` | `logging.file.backup_count` |
+| `texts.notify` | `texts.new_gift` |
+| `texts.title_limited` | `texts.title.limited` |
+| `texts.title_regular` | `texts.title.regular` |
+| `texts.require_premium_or_user_limited` | `texts.requirements.template` |
+| `texts.require_premium_or_user_limited_emoji` | `texts.requirements.emoji` |
+| `texts.require_premium` | `texts.requirements.premium` |
+| `texts.user_limited` | `texts.requirements.user_limited` |
+| `texts.require_premium_and_user_limited_separator` | `texts.requirements.separator` |
+
+Placeholders inside the templates are unchanged. Log levels must be one of `DEBUG`, `INFO`, `WARNING`, `ERROR`, `CRITICAL` (upper case, no numbers). Write numbers unquoted: 2.x also accepted quoted ones such as `check_interval: "1.0"`, while 3.x rejects quoted delays, timeouts and `upgrades.chat_id`. To keep upgrade checks off, leave `upgrades.chat_id` unset or `null`; `upgrades: null` is an error.
+
 ### Data file migration
 
 An existing `star_gifts.json` is migrated on the first start: `version` is set to `2`, the dead `sticker_file_id` / `sticker_file_name` keys are dropped (sticker references are now refreshed from every poll instead of being persisted), and four fields are added. `sticker_message_id` and `upgrade_sticker_message_id` ensure a retried new-gift or upgrade announcement never posts a second sticker. `upgrade_stars` holds Telegram's advertised upgrade price; a gift without one is probed at most every 5 minutes. `announce_pending` makes an announcement interrupted by a crash or Ctrl+C be resent on the next start. The file is marked for rewriting as version 2 once the session is authorized and, when needed, the upgradability baseline has completed; a later startup failure, such as an unresolvable chat, still leaves a version 2 file. The legacy code cannot read a version 2 file, so back up `star_gifts.json` before the first start.

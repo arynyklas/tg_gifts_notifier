@@ -3,7 +3,7 @@ from pathlib import Path
 from dature.errors import DatureConfigError, StrictModeError
 import pytest
 
-from src.config import Config
+from src.config import Config, is_legacy_layout
 
 EXAMPLE_CONFIG_PATH = Path(__file__).resolve().parents[1] / "config.example.yaml"
 
@@ -191,3 +191,28 @@ def test_the_error_names_the_allowed_placeholders(config_file):
     (error,) = _errors(config_file({"texts.sold_out": "{when}"}))
 
     assert error.endswith("using only {sold_out}")
+
+
+def test_a_2x_config_is_recognized(tmp_path):
+    path = tmp_path / "config.yaml"
+    path.write_text("telegram:\n  api_id: 1\n", encoding="utf-8")
+
+    assert is_legacy_layout(path) is True
+
+
+@pytest.mark.parametrize(
+    "content",
+    [None, "userbot:\n  api_id: 1\n", "- telegram\n", "telegram: [\n", b"\xff\xfe"],
+    ids=["missing", "3.x", "list", "broken-yaml", "not-utf-8"],
+)
+def test_anything_else_is_not_taken_for_a_2x_config(tmp_path, content):
+    """The check runs while reporting a load error, so it must never raise."""
+    path = tmp_path / "config.yaml"
+
+    if isinstance(content, bytes):
+        path.write_bytes(content)
+
+    elif content is not None:
+        path.write_text(content, encoding="utf-8")
+
+    assert is_legacy_layout(path) is False

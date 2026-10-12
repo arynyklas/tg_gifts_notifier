@@ -17,7 +17,7 @@ from telethon import TelegramClient, errors
 
 from src import constants
 from src.bot_api import BotApiClient
-from src.config import Config
+from src.config import Config, is_legacy_layout
 from src.detector import Detector, baseline_upgradability
 from src.logger import get_logger
 from src.notifier import Notifier
@@ -556,6 +556,13 @@ def _report_config_error(path: Path, ex: DatureConfigError) -> int:
     """Print why `path` did not load; never prints a config value."""
     if any(isinstance(error, FileNotFoundError) for error in ex.exceptions):
         print(f"Config file not found: {path}", file=sys.stderr)
+
+    elif is_legacy_layout(path):
+        print(
+            f"{path} uses the 2.x config layout; move its keys as listed under "
+            "'Upgrading from 2.x' in README.md",
+            file=sys.stderr,
+        )
 
     else:
         print(f"Invalid config {path}:", file=sys.stderr)

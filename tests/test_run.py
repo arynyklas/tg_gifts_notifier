@@ -892,3 +892,20 @@ async def test_a_data_file_with_wrongly_typed_gift_data_exits_one(
 
     assert "Cannot read gift data" in message
     assert "price" in message
+
+
+async def test_a_2x_config_is_pointed_at_the_upgrade_guide(
+    tmp_path, monkeypatch, capsys
+):
+    """One line instead of an error for each of its ~30 moved keys."""
+    config_path = tmp_path / "config.yaml"
+    config_path.write_text("telegram:\n  api_id: 1234\n", encoding="utf-8")
+
+    monkeypatch.setattr(sys, "argv", ["src.main", "--config", str(config_path)])
+
+    assert await main.main() == 1
+
+    err = capsys.readouterr().err
+
+    assert "Upgrading from 2.x" in err
+    assert err.count("\n") == 1

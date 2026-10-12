@@ -11,11 +11,17 @@ from typing import Annotated, Literal, Self, cast
 
 import dature
 from dature import V
+from ruamel.yaml import YAML
+from ruamel.yaml.error import YAMLError
 
 from src import constants
 from src.config_validators import SecureUrl, Template, Timezone
 
 LogLevel = Literal["DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"]
+
+
+# Every 2.x config has this top-level section; the 3.x layout has none.
+_LEGACY_SECTION = "telegram"
 
 
 def _float_from_number(value: object) -> float:
@@ -261,3 +267,16 @@ class Config:
                 cast("type", int | None): _optional_int,
             },
         )
+
+
+def is_legacy_layout(path: Path) -> bool:
+    """Whether `path` holds a 2.x config, recognized by its `telegram:` section."""
+    try:
+        data = YAML(typ="safe", pure=True).load(
+            path.read_text(encoding=constants.ENCODING)
+        )
+
+    except (OSError, UnicodeDecodeError, YAMLError):
+        return False
+
+    return isinstance(data, dict) and _LEGACY_SECTION in data
