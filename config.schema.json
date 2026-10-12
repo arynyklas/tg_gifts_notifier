@@ -136,7 +136,7 @@
       "type": "object",
       "properties": {
         "chat_id": {
-          "description": "Chat where upgrade messages are posted; `null` disables upgrade checks.",
+          "description": "Chat where upgrade messages are posted; `null` disables upgrade checks. Gifts are then never probed, so setting a chat later announces every gift that became upgradable in the meantime.",
           "anyOf": [
             {
               "type": "integer"
@@ -153,7 +153,7 @@
           "default": 2.0
         },
         "check_concurrency": {
-          "description": "Concurrent upgradability probes; `--save-only` and a data file migration use it even with upgrades off.",
+          "description": "Concurrent upgradability probes; `--save-only` and a data file migration use it even with upgrades off. At least 1.",
           "type": "integer",
           "minimum": 1,
           "default": 4
@@ -279,7 +279,7 @@
           "type": "object",
           "properties": {
             "template": {
-              "description": "Layout of the line. Placeholders: `{emoji}`, `{require_premium}`, `{separator}`, `{user_limited}`.",
+              "description": "Layout of the premium and per-user limit line. Placeholders: `{emoji}`, `{require_premium}`, `{separator}`, `{user_limited}`.",
               "type": "string"
             },
             "emoji": {

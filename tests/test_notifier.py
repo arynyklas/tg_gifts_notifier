@@ -1,4 +1,4 @@
-from typing import cast
+from typing import Any, cast
 
 import pytest
 from telethon import TelegramClient, errors
@@ -25,7 +25,7 @@ def notifier(config: Config, logger) -> Notifier:
 
 
 def _gift(**overrides) -> StarGiftData:
-    fields = {
+    fields: dict[str, Any] = {
         "id": 1234,
         "number": 7,
         "price": 1500,

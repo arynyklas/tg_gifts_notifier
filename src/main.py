@@ -11,7 +11,7 @@ import time
 from typing import Any, cast
 from zoneinfo import ZoneInfo
 
-from dature.errors import DatureConfigError
+from dature.errors import DatureConfigError, DatureErrorGroup, EnvVarExpandError
 import qrcode
 from ruamel.yaml.constructor import DuplicateKeyError
 from telethon import TelegramClient, errors
@@ -553,7 +553,7 @@ async def _run_login(mode: str, cfg: Config, logger: Logger) -> int:
         await client.disconnect()
 
 
-def _report_config_error(path: Path, ex: DatureConfigError) -> int:
+def _report_config_error(path: Path, ex: DatureErrorGroup) -> int:
     """Print why `path` did not load; never prints a config value."""
     if any(isinstance(error, FileNotFoundError) for error in ex.exceptions):
         print(f"Config file not found: {path}", file=sys.stderr)
@@ -592,7 +592,7 @@ async def main() -> int:
     try:
         cfg = Config.load(args.config)
 
-    except DatureConfigError as ex:
+    except (DatureConfigError, EnvVarExpandError) as ex:
         return _report_config_error(args.config, ex)
 
     logger = get_logger(constants.LOGGER_NAME, cfg.logging)

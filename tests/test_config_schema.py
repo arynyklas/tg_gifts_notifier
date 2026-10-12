@@ -96,6 +96,7 @@ def test_the_schema_accepts_exactly_what_the_loader_accepts(config_file, edits, 
         "http://localhost:8081",
         "http://127.0.0.1:8081",
         "http://[::1]:8081",
+        "http://localhost/bot",
     ],
 )
 def test_the_documented_base_urls_pass_the_editor_check(url):
@@ -114,10 +115,16 @@ def test_the_documented_base_urls_pass_the_editor_check(url):
         "HTTP://api.telegram.org",
         "api.telegram.org",
         "ftp://api.telegram.org",
-        "http://localhost/bot",
         "https://",
     ],
 )
 def test_the_editor_check_never_passes_a_url_the_loader_rejects(url):
     """A plaintext Bot API URL puts the token on the wire."""
     assert is_secure_url(url) or not re.search(SECURE_URL_PATTERN, url)
+
+
+def test_the_example_config_names_its_schema():
+    path = REPO_ROOT / "config.example.yaml"
+    first = path.read_text(encoding="utf-8").splitlines()[0]
+
+    assert first == "# yaml-language-server: $schema=./config.schema.json"

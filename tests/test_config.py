@@ -166,6 +166,8 @@ def test_no_config_is_searched_for_outside_the_given_path(
         ("texts.new_gift", "{title} {nonexistent}"),
         ("texts.new_gift", "{title} {}"),
         ("texts.new_gift", "{title:d}"),
+        ("texts.new_gift", "{title.missing}"),
+        ("texts.new_gift", "{number[0]}"),
         ("texts.sold_out", "sold out in {sold_out"),
         ("texts.requirements.user_limited", "{count} per user"),
         ("upgrades.text", "Upgradable: {gift}"),

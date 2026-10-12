@@ -88,7 +88,7 @@ It first dumps the existing data file to `star_gifts_dump_<timestamp>.json`; if 
 
 The first start without a data file announces the whole current catalog as new gifts (the legacy notifier did the same). Because those gifts are stored as not upgradable, the first upgrades cycle then also posts every already-upgradable gift to the upgrades chat. Run `--save-only` once before the first start to avoid both.
 
-Use `--config path/to/config.yaml` to run against a different config file.
+Use `--config path/to/config.yaml` to run against a different config file. `$NAME` and `%NAME%` in that path are replaced from the environment.
 
 Exit codes: `0` clean shutdown, including Ctrl+C at any phase once the notifier has started (a Ctrl+C while Python is still importing it prints a traceback); `1` configuration or startup failure, including network, RPC or flood-wait errors during startup; `2` session not authorized or authorization lost, including during the startup upgradability baseline and `--save-only`. After a network outage the notifier reconnects by itself, checking the connection every few seconds even while a request is stuck, and exits with `2` if Telegram no longer knows the session.
 
@@ -139,9 +139,9 @@ CI runs the same commands, except that its `uv sync --locked` stands in for `uv 
 | `notifications.after_sticker_delay` | Number | `1.0` | Delay after posting a sticker, before its text, in seconds. Paces upgrade posts too. |
 | `notifications.after_text_delay` | Number | `2.0` | Delay after posting a text, in seconds. Paces upgrade posts too. |
 | `notifications.timezone` | String | `"UTC"` | IANA timezone of the rendered timestamps and of `--save-only` dump names (e.g. `Europe/Moscow`). |
-| `upgrades.chat_id` | Integer or `null` | `null` | Chat where upgrade messages are posted; `null` disables upgrade checks. |
+| `upgrades.chat_id` | Integer or `null` | `null` | Chat where upgrade messages are posted; `null` disables upgrade checks. Gifts are then never probed, so setting a chat later announces every gift that became upgradable in the meantime. |
 | `upgrades.check_interval` | Number | `2.0` | Delay between upgradability check cycles, in seconds. |
-| `upgrades.check_concurrency` | Integer | `4` | Concurrent upgradability probes; `--save-only` and a data file migration use it even with upgrades off. |
+| `upgrades.check_concurrency` | Integer | `4` | Concurrent upgradability probes; `--save-only` and a data file migration use it even with upgrades off. At least 1. |
 | `upgrades.text` | String | `"Gift is upgradable! (<code>{id}</code>)"` | Upgrade message (HTML). Placeholders: `{id}`. |
 | `logging.telethon_level` | One of `DEBUG`, `INFO`, `WARNING`, `ERROR`, `CRITICAL` | `"WARNING"` | Level of Telethon's own loggers, kept apart from ours; `DEBUG` to debug MTProto. |
 | `logging.console.level` | One of `DEBUG`, `INFO`, `WARNING`, `ERROR`, `CRITICAL` | `"INFO"` | Console log level. |
@@ -155,7 +155,7 @@ CI runs the same commands, except that its `uv sync --locked` stands in for `uv 
 | `texts.total_amount` | String | required | Inserted as `{total_amount}` for a limited gift. Placeholders: `{total_amount}`. |
 | `texts.available_amount` | String | required | Inserted as `{available_amount}` for a limited gift. Placeholders: `{available_amount}`, `{same_str}`, `{available_percentage}`, `{updated_datetime}`. |
 | `texts.sold_out` | String | required | Inserted as `{sold_out}` once a gift is sold out. Placeholders: `{sold_out}`. |
-| `texts.requirements.template` | String | required | Layout of the line. Placeholders: `{emoji}`, `{require_premium}`, `{separator}`, `{user_limited}`. |
+| `texts.requirements.template` | String | required | Layout of the premium and per-user limit line. Placeholders: `{emoji}`, `{require_premium}`, `{separator}`, `{user_limited}`. |
 | `texts.requirements.emoji` | String | required | Inserted as `{emoji}`. |
 | `texts.requirements.premium` | String | required | Inserted as `{require_premium}` when the gift needs Telegram Premium. |
 | `texts.requirements.user_limited` | String | required | Inserted as `{user_limited}` when the gift is limited per user. Placeholders: `{user_limited}`. |

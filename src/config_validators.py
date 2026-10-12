@@ -18,8 +18,10 @@ from dature.validators.predicate import Predicate
 _LOCAL_HOSTS = frozenset({"localhost", "127.0.0.1", "::1"})
 
 # The editor-side form of `is_secure_url`, for `config.schema.json`. It may
-# reject more (an upper-case scheme, userinfo) but must never accept a URL that
-# `is_secure_url` rejects; `tests/test_config_schema.py` pins that.
+# reject more (an upper-case scheme, userinfo) but never accepts an `http` URL
+# that `is_secure_url` rejects; `tests/test_config_schema.py` pins that. It can
+# accept a malformed `https` one (`https://[::1`), which is harmless: plaintext
+# is what matters.
 SECURE_URL_PATTERN = (
     r"^(https://|http://(localhost|127\.0\.0\.1|\[::1\])(:[0-9]+)?(/|$))"
 )

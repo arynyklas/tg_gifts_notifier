@@ -4,6 +4,7 @@ from dataclasses import asdict, replace
 import json
 from pathlib import Path
 import threading
+from typing import Any
 
 import pytest
 
@@ -58,7 +59,7 @@ def write_legacy_data(path: Path) -> None:
 
 
 def _gift(gift_id: int, **overrides) -> StarGiftData:
-    fields = {
+    fields: dict[str, Any] = {
         "id": gift_id,
         "number": gift_id,
         "price": 100,

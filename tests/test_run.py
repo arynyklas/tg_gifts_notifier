@@ -783,6 +783,24 @@ async def test_a_duplicate_key_is_reported_without_quoting_either_value(
     assert "FAKE-SECRET" not in out + err
 
 
+async def test_a_yaml_syntax_error_is_reported_without_quoting_a_value(
+    tmp_path, monkeypatch, capsys
+):
+    """ruamel parser errors quote no value, so their text is kept."""
+    config_path = tmp_path / "config.yaml"
+    config_path.write_text(
+        'userbot:\n  api_hash: "FAKE-SECRET-UNCLOSED\n', encoding="utf-8"
+    )
+
+    monkeypatch.setattr(sys, "argv", ["src.main", "--config", str(config_path)])
+
+    assert await main.main() == 1
+
+    out, err = capsys.readouterr()
+
+    assert "FAKE-SECRET" not in out + err
+
+
 async def test_a_missing_config_file_is_reported_by_its_path(
     tmp_path, monkeypatch, capsys
 ):
@@ -792,6 +810,21 @@ async def test_a_missing_config_file_is_reported_by_its_path(
 
     assert await main.main() == 1
     assert capsys.readouterr().err == f"Config file not found: {config_path}\n"
+
+
+async def test_an_unset_variable_in_the_config_path_is_reported(monkeypatch, capsys):
+    """dature expands `$NAME` in the path and fails on an unset one."""
+    monkeypatch.delenv("TGN_TEST_UNSET_VARIABLE", raising=False)
+    monkeypatch.setattr(
+        sys, "argv", ["src.main", "--config", "$TGN_TEST_UNSET_VARIABLE/config.yaml"]
+    )
+
+    assert await main.main() == 1
+
+    err = capsys.readouterr().err
+
+    assert err.startswith("Invalid config")
+    assert "TGN_TEST_UNSET_VARIABLE" in err
 
 
 async def test_errors_beyond_the_seventh_are_counted(config_file, monkeypatch, capsys):
@@ -811,7 +844,10 @@ async def test_errors_beyond_the_seventh_are_counted(config_file, monkeypatch, c
     monkeypatch.setattr(sys, "argv", ["src.main", "--config", str(config_path)])
 
     assert await main.main() == 1
-    assert "... and 1 more errors (8 total)" in capsys.readouterr().err
+    err = capsys.readouterr().err
+
+    assert "... and 1 more errors (8 total)" in err
+    assert sum(f"[{key}]" in err for key in keys) == 7
 
 
 async def test_strict_probing_never_records_a_failed_probe(logger, monkeypatch):

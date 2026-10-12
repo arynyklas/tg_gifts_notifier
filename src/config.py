@@ -116,11 +116,11 @@ class UpgradesConfig:
     """Upgrade posts. Omit the section, or set `chat_id` to `null`, to disable upgrade checks."""
 
     chat_id: int | None = None
-    """Chat where upgrade messages are posted; `null` disables upgrade checks."""
+    """Chat where upgrade messages are posted; `null` disables upgrade checks. Gifts are then never probed, so setting a chat later announces every gift that became upgradable in the meantime."""
     check_interval: float = 2.0
     """Delay between upgradability check cycles, in seconds."""
     check_concurrency: Annotated[int, V >= 1] = 4
-    """Concurrent upgradability probes; `--save-only` and a data file migration use it even with upgrades off."""
+    """Concurrent upgradability probes; `--save-only` and a data file migration use it even with upgrades off. At least 1."""
     text: Annotated[str, Template.of(id=0)] = "Gift is upgradable! (<code>{id}</code>)"
     """Upgrade message (HTML)."""
 
@@ -178,7 +178,7 @@ class RequirementTexts:
         str,
         Template.of(emoji="", require_premium="", separator="", user_limited=""),
     ]
-    """Layout of the line."""
+    """Layout of the premium and per-user limit line."""
     emoji: str
     """Inserted as `{emoji}`."""
     premium: str
@@ -251,7 +251,11 @@ class Config:
 
     @classmethod
     def load(cls, path: Path) -> Self:
-        """Load and validate `path`; raises `dature.errors.DatureConfigError`."""
+        """Load and validate `path`; raises `dature.errors.DatureConfigError`.
+
+        `$NAME` / `%NAME%` in `path` are replaced from the environment; an unset
+        one raises `dature.errors.EnvVarExpandError`.
+        """
         return dature.load(
             # No fallback to a config.yaml in %APPDATA% or ~/.config.
             dature.Yaml12Source(file=path, encoding=constants.ENCODING, config_dirs=()),
