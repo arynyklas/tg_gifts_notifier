@@ -29,9 +29,10 @@ DEFAULT_PORT = 443
 
 
 def convert(src: Path, dst: Path) -> int:
-    if dst.suffix != ".session":
-        # `SQLiteSession` appends the suffix itself, so the guard below has to
-        # check the path it will actually write, not the one given.
+    if not dst.name.endswith(".session"):
+        # `SQLiteSession` appends the suffix to a name not ending in it (the
+        # same `endswith` test), so the guard below has to check the path it
+        # will actually write, not the one given.
         dst = dst.with_name(dst.name + ".session")
 
     if not src.is_file():

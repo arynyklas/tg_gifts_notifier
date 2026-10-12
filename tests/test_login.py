@@ -1,4 +1,5 @@
 from datetime import UTC, datetime, timedelta
+import sys
 from typing import cast
 
 import pytest
@@ -274,6 +275,28 @@ def test_qr_login_client_must_receive_updates(config: Config, tmp_path, logger):
     finally:
         cast(Session, notifier_client.session).close()
         cast(Session, login_client.session).close()
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="POSIX mode bits only")
+def test_the_session_file_telethon_opens_is_owner_only(
+    config: Config, tmp_path, logger
+):
+    """`SQLiteSession` appends `.session` to a path configured without it."""
+    telegram = TelegramConfig.model_validate(
+        config.telegram.model_dump()
+        | {"session_path": tmp_path / "sessions" / "userbot"}
+    )
+
+    client = build_client(telegram, logger)
+
+    try:
+        session_file = tmp_path / "sessions" / "userbot.session"
+
+        assert session_file.stat().st_mode & 0o777 == 0o600
+        assert session_file.parent.stat().st_mode & 0o777 == 0o700
+
+    finally:
+        cast(Session, client.session).close()
 
 
 async def test_run_login_always_disconnects(config: Config, logger, monkeypatch):

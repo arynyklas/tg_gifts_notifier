@@ -75,18 +75,23 @@ class _FakeBotApiServer:
 
 
 @pytest.fixture
-def serve(config: Config, logger) -> Iterator[Callable[[Responder], BotApiClient]]:
+def serve(config: Config, logger) -> Iterator[Callable[..., BotApiClient]]:
     servers: list[_FakeBotApiServer] = []
     clients: list[BotApiClient] = []
 
-    def factory(responder: Responder) -> BotApiClient:
+    def factory(responder: Responder, tokens: list[str] | None = None) -> BotApiClient:
         server = _FakeBotApiServer(responder)
 
         servers.append(server)
         server.__enter__()
 
+        overrides: dict[str, object] = {"bot_api_base_url": server.base_url}
+
+        if tokens is not None:
+            overrides["bot_tokens"] = tokens
+
         telegram = TelegramConfig.model_validate(
-            config.telegram.model_dump() | {"bot_api_base_url": server.base_url}
+            config.telegram.model_dump() | overrides
         )
         client = BotApiClient(telegram, logger)
 
@@ -211,11 +216,11 @@ async def test_rate_limit_without_parameters_falls_back_to_one_second(
     assert delays == [1]
 
 
-async def test_deterministic_error_fails_without_burning_every_token(serve):
+async def test_bad_request_fails_without_burning_every_token(serve):
     client = serve(
         lambda path, body: (
-            403,
-            {"ok": False, "error_code": 403, "description": "Forbidden"},
+            400,
+            {"ok": False, "error_code": 400, "description": "Bad Request: chat"},
         )
     )
 
@@ -226,17 +231,111 @@ async def test_deterministic_error_fails_without_burning_every_token(serve):
     finally:
         await client.aclose()
 
-    assert excinfo.value.code == 403
+    assert excinfo.value.code == 400
     assert len(client.server.calls) == 1
 
 
-async def test_exhausted_attempts_raise_a_summary_error(serve):
+async def test_revoked_token_is_rotated_past_on_every_send(serve):
+    """A 401 is scoped to one token; legacy moved on to the next one."""
+
+    def responder(path: str, body: dict) -> tuple[int, object]:
+        if "/botrevoked/" in path:
+            return 401, {"ok": False, "error_code": 401, "description": "Unauthorized"}
+
+        return 200, {"ok": True, "result": {"message_id": 5}}
+
+    client = serve(responder, tokens=["good", "revoked"])
+
+    try:
+        for _ in range(4):
+            assert await client.send_message(-100, "hello") == 5
+
+    finally:
+        await client.aclose()
+
+    assert "revoked" in client.server.tokens_used
+
+
+@pytest.mark.parametrize("code", [401, 403, 404, 500, 502])
+async def test_server_or_forbidden_error_is_retried_on_the_next_token(serve, code):
+    state = {"calls": 0}
+
+    def responder(path: str, body: dict) -> tuple[int, object]:
+        state["calls"] += 1
+
+        if state["calls"] == 1:
+            return code, {"ok": False, "error_code": code, "description": "Oops"}
+
+        return 200, {"ok": True, "result": {"message_id": 6}}
+
+    client = serve(responder, tokens=["first", "second"])
+
+    try:
+        assert await client.send_message(-100, "hello") == 6
+
+    finally:
+        await client.aclose()
+
+    assert client.server.tokens_used == ["first", "second"]
+
+
+async def test_exhausted_attempts_raise_the_last_error(serve):
+    state = {"calls": 0}
+
+    def responder(path: str, body: dict) -> tuple[int, object]:
+        state["calls"] += 1
+
+        return 502, {
+            "ok": False,
+            "error_code": 502,
+            "description": f"Bad Gateway {state['calls']}",
+        }
+
+    client = serve(responder)
+
+    try:
+        with pytest.raises(BotApiError) as excinfo:
+            await client.send_message(-100, "hello")
+
+    finally:
+        await client.aclose()
+
+    assert excinfo.value.code == 502
+    assert excinfo.value.description == "Bad Gateway 3"
+    assert len(client.server.calls) == 3  # max(3, len(bot_tokens))
+
+
+async def test_persistent_rate_limit_skips_the_sleep_after_the_last_attempt(
+    serve, monkeypatch
+):
+    """Sleeping after the final 429 only delayed the raise by `retry_after`."""
     client = serve(
         lambda path, body: (
             429,
-            {"ok": False, "error_code": 429, "parameters": {"retry_after": 0}},
+            {
+                "ok": False,
+                "error_code": 429,
+                "description": "Too Many Requests",
+                "parameters": {"retry_after": 30},
+            },
         )
     )
+    delays = _record_sleeps(monkeypatch)
+
+    try:
+        with pytest.raises(BotApiError) as excinfo:
+            await client.send_message(-100, "hello")
+
+    finally:
+        await client.aclose()
+
+    assert excinfo.value.code == 429
+    assert len(client.server.calls) == 3
+    assert delays == [30, 30]
+
+
+async def test_exhausted_attempts_without_any_api_error_raise_a_summary(serve):
+    client = serve(lambda path, body: (200, ["not", "an", "object"]))
 
     try:
         with pytest.raises(BotApiError) as excinfo:
@@ -247,7 +346,6 @@ async def test_exhausted_attempts_raise_a_summary_error(serve):
 
     assert excinfo.value.code == -1
     assert "all bot tokens failed for sendMessage" in excinfo.value.description
-    assert len(client.server.calls) == 3  # max(3, len(bot_tokens))
 
 
 async def test_malformed_body_is_retried(serve):
@@ -290,7 +388,7 @@ async def test_not_modified_edit_is_swallowed_and_other_errors_propagate(serve):
     client = serve(responder)
 
     try:
-        assert await client.edit_message_text(-100, 1, "same text") is False
+        assert await client.edit_message_text(-100, 1, "same text") is None
 
         with pytest.raises(BotApiError):
             await client.edit_message_text(-100, 2, "text")
@@ -299,11 +397,11 @@ async def test_not_modified_edit_is_swallowed_and_other_errors_propagate(serve):
         await client.aclose()
 
 
-async def test_successful_edit_returns_true(serve):
+async def test_successful_edit_returns_normally(serve):
     client = serve(lambda path, body: (200, {"ok": True, "result": {"message_id": 1}}))
 
     try:
-        assert await client.edit_message_text(-100, 1, "new text") is True
+        assert await client.edit_message_text(-100, 1, "new text") is None
 
     finally:
         await client.aclose()

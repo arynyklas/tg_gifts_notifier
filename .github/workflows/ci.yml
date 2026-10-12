@@ -60,14 +60,17 @@ jobs:
           cache-dependency-glob: "uv.lock"
 
       - name: Install dependencies
-        run: uv sync --locked --group dev
+        run: uv sync --locked --group dev --group tests
 
       - name: Run ty
-        run: uv run ty check src tests
+        run: uv run ty check src tests scripts
 
   test:
     name: Tests
     runs-on: ubuntu-latest
+    # The suite takes seconds; a regression that hangs it (a task that swallows
+    # its own cancellation) should fail here, not after GitHub's 6-hour default.
+    timeout-minutes: 10
     steps:
       - uses: actions/checkout@v4
 

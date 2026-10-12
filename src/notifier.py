@@ -140,7 +140,7 @@ class Notifier:
         try:
             if gift.sticker_message_id is None and sticker is not None:
                 message = await send_gift_sticker(
-                    self._client, self._notify_peer, sticker
+                    self._client, self._notify_peer, sticker, self._logger
                 )
 
                 await self._store.set_message_ids(
@@ -184,7 +184,7 @@ class Notifier:
             return False
 
         try:
-            return await self._bot_api.edit_message_text(
+            await self._bot_api.edit_message_text(
                 self._notifications.chat_id,
                 gift.message_id,
                 self.render_gift_text(gift),
@@ -196,6 +196,8 @@ class Notifier:
             )
 
             return False
+
+        return True
 
     async def announce_upgrade(
         self,
@@ -227,7 +229,9 @@ class Notifier:
                     )
 
                 else:
-                    message = await send_gift_sticker(self._client, peer, sticker)
+                    message = await send_gift_sticker(
+                        self._client, peer, sticker, self._logger
+                    )
                     sticker_message_id = message.id
 
                     await self._store.set_message_ids(

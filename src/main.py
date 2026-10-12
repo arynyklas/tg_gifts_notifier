@@ -24,6 +24,7 @@ from src.logger import get_logger
 from src.notifier import Notifier
 from src.store import StarGiftsStore
 from src.userbot import (
+    AUTH_ERRORS,
     AuthorizationLostError,
     build_client,
     fetch_star_gifts,
@@ -91,9 +92,18 @@ async def supervise(
             logger.error("Task %s returned unexpectedly, restarting", name)
 
         except asyncio.CancelledError:
-            logger.info("Task %s cancelled", name)
+            # A CancelledError while this task is not being cancelled comes from a
+            # library cancelling a future it owns, e.g. Telethon's disconnect()
+            # cancelling in-flight requests after a fatal update-loop error.
+            # Re-raising it would end this task silently as if shut down.
+            task = asyncio.current_task()
 
-            raise
+            if task is None or task.cancelling():
+                logger.info("Task %s cancelled", name)
+
+                raise
+
+            logger.exception("Task %s crashed, restarting in %.1fs", name, delay)
 
         except AuthorizationLostError as ex:
             logger.critical(
@@ -283,6 +293,16 @@ async def _save_only(
         await dump_store.replace_all(store.snapshot())
         await dump_store.flush()
 
+        if dump_store.is_dirty:
+            # `flush` has logged why. The data file is the only other copy of
+            # the posted message ids, so it must not be replaced.
+            logger.critical(
+                "Old gift data was not dumped, %s left unchanged",
+                cfg.storage.data_filepath,
+            )
+
+            return _EXIT_CONFIG
+
         logger.info("Old gift data dumped to %s", dump_path)
 
     parsed = await fetch_star_gifts(client, logger)
@@ -292,17 +312,34 @@ async def _save_only(
 
         return _EXIT_CONFIG
 
-    await store.replace_all([gift.data for gift in parsed.values()])
+    gifts = [gift.data for gift in parsed.values()]
 
-    logger.info("Saved %d gifts to %s", len(parsed), cfg.storage.data_filepath)
+    # Upgradability is part of the state being baselined: without it the first
+    # upgrades cycle announces every gift that is already upgradable. The store
+    # is replaced only after every probe succeeded, so a failed or interrupted
+    # baseline leaves the old data file in place instead of one marking nothing.
+    upgradable = set(
+        await baseline_upgradability(client, [gift.id for gift in gifts], cfg, logger)
+    )
 
-    # Upgradability is part of the state being baselined: without this the first
-    # upgrades cycle announces every gift that is already upgradable.
-    marked = await baseline_upgradability(client, store, cfg, logger)
+    # Not in the store yet, so setting the flag directly bypasses no owner.
+    for gift in gifts:
+        gift.is_upgradable = gift.id in upgradable
 
+    await store.replace_all(gifts)
     await store.flush()
 
-    logger.info("Marked %d of %d gifts as already upgradable", marked, len(parsed))
+    if store.is_dirty:
+        logger.critical("Could not save gifts to %s", cfg.storage.data_filepath)
+
+        return _EXIT_CONFIG
+
+    logger.info(
+        "Saved %d gifts to %s, %d of them already upgradable",
+        len(gifts),
+        cfg.storage.data_filepath,
+        len(upgradable),
+    )
 
     return _EXIT_OK
 
@@ -367,6 +404,7 @@ async def _detect(
             ("saver", store.run_saver),
             ("poll", detector.poll_loop),
             ("updates", detector.updates_loop),
+            ("connection", detector.connection_loop),
         ]
 
         if upgrades_peer is not None:
@@ -405,6 +443,32 @@ async def _detect(
     return _EXIT_UNAUTHORIZED if fatal.is_set() else _EXIT_OK
 
 
+async def _baseline_migrated(
+    client: TelegramClient,
+    store: StarGiftsStore,
+    cfg: Config,
+    logger: Logger,
+) -> None:
+    if any(gift.is_upgradable for gift in store.gifts()):
+        # The legacy notifier tracked upgradability itself. Its flags are kept,
+        # so a gift that became upgradable while neither version ran is still
+        # announced.
+        logger.info("Keeping the upgradability recorded by the legacy notifier")
+
+        return
+
+    # A legacy run without an upgrades chat marked nothing; without a baseline
+    # the first upgrades cycle announces every already-upgradable gift.
+    upgradable = await baseline_upgradability(
+        client, [gift.id for gift in store.upgrade_candidates()], cfg, logger
+    )
+
+    for gift_id in upgradable:
+        await store.mark_upgradable(gift_id)
+
+    logger.info("Marked %d migrated gifts as already upgradable", len(upgradable))
+
+
 async def _run(args: argparse.Namespace, cfg: Config, logger: Logger) -> int:
     try:
         store, migrated = StarGiftsStore.load(
@@ -420,19 +484,17 @@ async def _run(args: argparse.Namespace, cfg: Config, logger: Logger) -> int:
 
     if migrated:
         logger.info(
-            "Migrated %d gifts from schema v%d to v%d",
+            "Migrating %d gifts from schema v%d to v%d",
             len(store),
             store.loaded_version,
             constants.SCHEMA_VERSION,
         )
 
-        store.mark_dirty()
-
     client = build_client(cfg.telegram, logger)
 
-    await client.connect()
-
     try:
+        await client.connect()
+
         if not await client.is_user_authorized():
             logger.critical(
                 "Session is not authorized; run: python -m src.main --login"
@@ -440,17 +502,27 @@ async def _run(args: argparse.Namespace, cfg: Config, logger: Logger) -> int:
 
             return _EXIT_UNAUTHORIZED
 
-        if migrated:
-            # A migrated v1 file has no upgradability at all, so without this the
-            # first upgrades cycle announces every already-upgradable gift.
-            marked = await baseline_upgradability(client, store, cfg, logger)
-
-            logger.info("Marked %d migrated gifts as already upgradable", marked)
-
         if args.save_only:
+            # Re-baselines every gift, so a migrated file needs nothing extra.
             return await _save_only(client, store, cfg, logger)
 
+        if migrated:
+            await _baseline_migrated(client, store, cfg, logger)
+            # Written only now, so a start that fails earlier leaves the legacy
+            # file in place and the next start migrates it again.
+            store.mark_dirty()
+
         return await _detect(client, store, cfg, logger)
+
+    except (*AUTH_ERRORS, AuthorizationLostError) as ex:
+        logger.critical("Authorization lost (%s); run: python -m src.main --login", ex)
+
+        return _EXIT_UNAUTHORIZED
+
+    except (errors.RPCError, OSError) as ex:  # FloodWaitError, ConnectionError
+        logger.critical("Startup failed: %s", ex)
+
+        return _EXIT_CONFIG
 
     finally:
         await store.flush()
@@ -525,11 +597,22 @@ async def main() -> int:
     try:
         return await _run(args, cfg, logger)
 
-    except RuntimeError:
+    except Exception:
         logger.critical("Startup failed", exc_info=True)
 
         return _EXIT_CONFIG
 
 
+def _entrypoint() -> int:
+    try:
+        return asyncio.run(main())
+
+    except KeyboardInterrupt:
+        # Until the signal handlers are installed, `asyncio.run` turns Ctrl+C into
+        # a cancellation of `main` and re-raises it here after every `finally`
+        # has flushed and disconnected, so this is a clean stop.
+        return _EXIT_OK
+
+
 if __name__ == "__main__":
-    raise SystemExit(asyncio.run(main()))
+    raise SystemExit(_entrypoint())

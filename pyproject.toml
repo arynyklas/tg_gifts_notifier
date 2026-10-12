@@ -44,7 +44,7 @@ pythonpath = ["."]
 python-version = "3.13"
 
 [tool.ty.src]
-include = ["src", "tests"]
+include = ["src", "tests", "scripts"]
 
 [tool.ruff]
 # Python version compatibility
@@ -119,7 +119,8 @@ lint.fixable = ["ALL"]
 # Per-file ignores for specific patterns
 [tool.ruff.lint.per-file-ignores]
 # Tests legitimately embed fake tokens; S105 flags the literal, not a real leak.
-"tests/*" = ["S101", "S105", "ANN", "PLR2004", "SIM117"]
+# PLR0917: pytest injects fixtures by name, never positionally.
+"tests/*" = ["S101", "S105", "ANN", "PLR2004", "PLR0917", "SIM117"]
 "scripts/*" = ["T201", "S101"]
 "__init__.py" = ["F401"]
 

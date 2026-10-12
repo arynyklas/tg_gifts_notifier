@@ -15,6 +15,7 @@ _BASE_PAYLOAD: dict[str, Any] = {
     "link_preview_options": {"is_disabled": True},
 }
 _MIN_ATTEMPTS = 3
+_BAD_REQUEST = 400
 _TOO_MANY_REQUESTS = 429
 # niquests verifies against the OS trust store, which on Windows is populated on
 # demand and can lack the root that signs api.telegram.org, failing with
@@ -76,7 +77,12 @@ class BotApiClient:
 
         return message_id
 
-    async def edit_message_text(self, chat_id: int, message_id: int, text: str) -> bool:
+    async def edit_message_text(self, chat_id: int, message_id: int, text: str) -> None:
+        """Raise `BotApiError` on failure.
+
+        "message is not modified" means the message already shows `text`, which
+        is exactly what the caller wanted, so it counts as success.
+        """
         try:
             await self._request(
                 "editMessageText",
@@ -84,16 +90,24 @@ class BotApiClient:
             )
 
         except BotApiError as ex:
-            if ex.code == 400 and "message is not modified" in ex.description.lower():
-                return False
+            if (
+                ex.code == _BAD_REQUEST
+                and "message is not modified" in ex.description.lower()
+            ):
+                return
 
             raise
 
-        return True
-
     async def _request(self, method: str, payload: dict[str, Any]) -> object:
+        """Post `payload`, rotating to the next token on any non-400 failure.
+
+        401 (revoked token), 403 (bot removed from the chat) and 5xx are scoped
+        to one token or one moment, so another token may well succeed; only a
+        400 is a property of the request itself and fails at once.
+        """
         body = payload | _BASE_PAYLOAD
         attempts = max(_MIN_ATTEMPTS, len(self._tokens))
+        last_error: BotApiError | None = None
 
         self._logger.debug("Bot API %s payload: %s", method, payload)
 
@@ -135,8 +149,13 @@ class BotApiClient:
 
             code = int(response.get("error_code") or -1)
             description = str(response.get("description") or "")
+            last_error = BotApiError(code, description)
 
             if code == _TOO_MANY_REQUESTS:
+                # Sleeping after the final attempt only delays the inevitable raise.
+                if attempt == attempts:
+                    raise last_error
+
                 retry_after = (response.get("parameters") or {}).get("retry_after", 1)
 
                 self._logger.warning(
@@ -151,7 +170,21 @@ class BotApiClient:
 
                 continue
 
-            # Deterministic errors must not burn every token.
-            raise BotApiError(code, description)
+            # A bad request fails the same way with every token.
+            if code == _BAD_REQUEST:
+                raise last_error
+
+            self._logger.warning(
+                "Bot API %s failed with [%d] %s (attempt %d/%d)",
+                method,
+                code,
+                description,
+                attempt,
+                attempts,
+            )
+
+        # The caller's log must say why, not just that every token failed.
+        if last_error is not None:
+            raise last_error
 
         raise BotApiError(-1, f"all bot tokens failed for {method}")

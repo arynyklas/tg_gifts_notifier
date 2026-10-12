@@ -1,4 +1,5 @@
 import asyncio
+from collections.abc import Sequence
 from logging import Logger
 from time import monotonic
 
@@ -13,6 +14,7 @@ from src.userbot import (
     AUTH_ERRORS,
     AuthorizationLostError,
     ParsedGift,
+    ensure_connected,
     fetch_star_gifts,
     probe_upgradable,
 )
@@ -43,13 +45,21 @@ class Detector:
         self._retry_delay: dict[int, float] = {}
         self._probed_at: dict[int, float] = {}
         self._upgrade_slots = asyncio.Semaphore(cfg.detector.upgrades_check_concurrency)
+        # One reconnect at a time, whichever loop notices the dropped client.
+        self._connect_lock = asyncio.Lock()
+        self._catalog_ready = asyncio.Event()
 
     def sticker_for(self, gift_id: int) -> types.Document | None:
         return self._stickers.get(gift_id)
 
     async def poll_loop(self) -> None:
+        # The retry schedule lives only in memory, so a supervise restart after
+        # an announcement crashed the loop would otherwise never retry that gift.
+        self.seed_pending_announcements()
+
         while True:
             try:
+                await ensure_connected(self._client, self._connect_lock, self._logger)
                 await self.poll_once()
 
             except AUTH_ERRORS as ex:
@@ -80,9 +90,35 @@ class Detector:
 
             await asyncio.sleep(self._detector_cfg.updates_batch_delay)
 
-    async def upgrades_loop(self) -> None:
+    async def connection_loop(self) -> None:
+        """Reconnect independently of the loops that send requests.
+
+        `is_connected()` stays true while Telethon retries a dropped connection,
+        so a request sent then is queued, and once Telethon gives up that queue
+        is never answered or failed. The loop that sent it never gets back to
+        `ensure_connected`; a reconnect from here drains the queue and frees it.
+        """
         while True:
             try:
+                await ensure_connected(self._client, self._connect_lock, self._logger)
+
+            except AUTH_ERRORS as ex:
+                raise AuthorizationLostError(str(ex)) from ex
+
+            except (errors.RPCError, OSError) as ex:
+                self._logger.warning("Userbot reconnect failed: %r", ex)
+
+            await asyncio.sleep(constants.CONNECTION_CHECK_INTERVAL)
+
+    async def upgrades_loop(self) -> None:
+        # Stickers come only from a catalog poll, and both loops start together:
+        # an upgrade found before the first poll would be posted without its
+        # sticker and marked upgradable, so it would never get one.
+        await self._catalog_ready.wait()
+
+        while True:
+            try:
+                await ensure_connected(self._client, self._connect_lock, self._logger)
                 await self.check_upgrades_once()
 
             except AUTH_ERRORS as ex:
@@ -117,6 +153,8 @@ class Detector:
             for gift_id, gift in parsed.items()
             if gift.sticker is not None
         }
+
+        self._catalog_ready.set()
 
         await self._announce_new(parsed)
         await self._retry_announcements()
@@ -172,12 +210,14 @@ class Detector:
             return 0
 
         now = monotonic()
+        # `monotonic()` has no fixed origin (on Linux it counts from boot), so a
+        # never-probed gift is due now rather than measured against 0.0.
         candidates = [
             gift
             for gift in self._store.upgrade_candidates()
             if gift.upgrade_stars is not None
-            or now - self._probed_at.get(gift.id, 0.0)
-            >= constants.NEGATIVE_PROBE_COOLDOWN
+            or gift.id not in self._probed_at
+            or now - self._probed_at[gift.id] >= constants.NEGATIVE_PROBE_COOLDOWN
         ]
 
         if not candidates:
@@ -304,29 +344,26 @@ class Detector:
 
 async def baseline_upgradability(
     client: TelegramClient,
-    store: StarGiftsStore,
+    gift_ids: Sequence[int],
     cfg: Config,
     logger: Logger,
-) -> int:
-    """Record which stored gifts are already upgradable, announcing nothing.
+) -> list[int]:
+    """Return which of `gift_ids` are already upgradable, announcing nothing.
 
-    Without this, a `--save-only` baseline stores every gift as not upgradable
-    and the first upgrades cycle announces the entire existing catalog — 118 of
-    149 gifts were already upgradable when this was written.
+    A baseline (a `--save-only` run, or a legacy file whose run never checked
+    upgrades) knows nothing about upgradability, and the first upgrades cycle
+    would announce every already-upgradable gift — 118 of 149 when this was
+    written. Every probe must succeed: a gift whose probe failed would be stored
+    as not upgradable and announced the same way, so any failure raises and the
+    caller persists nothing.
     """
-    candidates = [gift.id for gift in store.upgrade_candidates()]
+    if not gift_ids:
+        return []
 
-    if not candidates:
-        return 0
-
-    upgradable = await probe_upgradable(
+    return await probe_upgradable(
         client,
-        candidates,
+        gift_ids,
         asyncio.Semaphore(cfg.detector.upgrades_check_concurrency),
         logger,
+        strict=True,
     )
-
-    for gift_id in upgradable:
-        await store.mark_upgradable(gift_id)
-
-    return len(upgradable)

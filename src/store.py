@@ -13,9 +13,15 @@ from src.models import StarGiftData, StarGiftsFile
 def _merge_live(stored: StarGiftData, live: StarGiftData) -> bool:
     """Copy the volatile fields of `live` onto `stored`; report a real change.
 
+    `first_appearance_timestamp` is copied only for sold-out gifts: Telegram
+    sends `first_sale_date` only alongside `last_sale_date`, so only then is the
+    live value the real first-sale date rather than the parser's "now" fallback.
+
     Compared field by field rather than through a dump or a tuple so that the
     unchanged case — nearly every poll — allocates nothing.
     """
+    sold_out = live.last_sale_timestamp is not None
+
     if (
         stored.number == live.number
         and stored.price == live.price
@@ -27,6 +33,10 @@ def _merge_live(stored: StarGiftData, live: StarGiftData) -> bool:
         and stored.is_limited == live.is_limited
         and stored.last_sale_timestamp == live.last_sale_timestamp
         and stored.upgrade_stars == live.upgrade_stars
+        and (
+            not sold_out
+            or stored.first_appearance_timestamp == live.first_appearance_timestamp
+        )
     ):
         return False
 
@@ -40,6 +50,9 @@ def _merge_live(stored: StarGiftData, live: StarGiftData) -> bool:
     stored.is_limited = live.is_limited
     stored.last_sale_timestamp = live.last_sale_timestamp
     stored.upgrade_stars = live.upgrade_stars
+
+    if sold_out:
+        stored.first_appearance_timestamp = live.first_appearance_timestamp
 
     return True
 
@@ -57,7 +70,11 @@ class StarGiftsStore:
         self._logger = logger
         self._gifts: dict[int, StarGiftData] = {}
         self._lock = asyncio.Lock()
+        self._write_lock = asyncio.Lock()
         self._dirty = asyncio.Event()
+        # The thread of a write whose awaiting task was cancelled keeps running;
+        # tracked so no newer write can start (and be overtaken) before it ends.
+        self._inflight: asyncio.Future[None] | None = None
         self.loaded_version = constants.SCHEMA_VERSION
 
     @classmethod
@@ -129,8 +146,10 @@ class StarGiftsStore:
 
         Returns `(stored, previous_available)` for every known gift whose stock
         dropped. Unknown gifts are ignored, and `message_id`,
-        `sticker_message_id`, `is_upgradable` and `first_appearance_timestamp`
-        are never touched, so a concurrent notification cannot be clobbered.
+        `sticker_message_id` and `is_upgradable` are never touched, so a
+        concurrent notification cannot be clobbered. `first_appearance_timestamp`
+        is adopted only from sold-out gifts, the only ones carrying Telegram's
+        real first-sale date.
 
         The store is marked dirty only when a field really changed: the catalog
         is polled every second and is usually identical, so marking it
@@ -231,7 +250,10 @@ class StarGiftsStore:
                 raise
 
     async def flush(self) -> None:
-        """Write pending changes, if any."""
+        """Write pending changes, if any, after any in-flight write has ended."""
+        async with self._write_lock:
+            await self._settle_inflight()
+
         if not self._dirty.is_set():
             self._logger.debug("Nothing to save to %s", self._path)
 
@@ -246,16 +268,58 @@ class StarGiftsStore:
             self.mark_dirty()
             self._logger.exception("Could not save gift data to %s", self._path)
 
-    async def _write(self) -> None:
-        async with self._lock:
-            gifts = self.snapshot()
-            payload = StarGiftsFile(
-                version=constants.SCHEMA_VERSION,
-                star_gifts=gifts,
-            ).model_dump_json(indent=4)
-            amount = len(gifts)
+    async def _settle_inflight(self) -> None:
+        """Wait for an orphaned write; re-arm dirty if it failed.
 
-        await asyncio.to_thread(self._write_atomic, payload)
+        Its failure is not the caller's own, so it is never raised here; the
+        caller's own (newer) write retries it instead.
+        """
+        inflight = self._inflight
+
+        if inflight is None:
+            return
+
+        try:
+            await asyncio.shield(inflight)
+
+        except OSError:
+            self._logger.warning(
+                "An interrupted save to %s failed; retrying", self._path
+            )
+            self.mark_dirty()
+
+        if self._inflight is inflight:
+            self._inflight = None
+
+    async def _write(self) -> None:
+        async with self._write_lock:
+            await self._settle_inflight()
+
+            async with self._lock:
+                gifts = self.snapshot()
+                payload = StarGiftsFile(
+                    version=constants.SCHEMA_VERSION,
+                    star_gifts=gifts,
+                ).model_dump_json(indent=4)
+                amount = len(gifts)
+
+            inflight = asyncio.ensure_future(
+                asyncio.to_thread(self._write_atomic, payload)
+            )
+            # Retrieve the outcome even if nobody awaits it again (shutdown).
+            inflight.add_done_callback(
+                lambda future: future.cancelled() or future.exception()
+            )
+            self._inflight = inflight
+
+            # Shielded: cancelling the caller leaves the write tracked as
+            # in-flight instead of pretending it stopped.
+            try:
+                await asyncio.shield(inflight)
+
+            finally:
+                if inflight.done() and self._inflight is inflight:
+                    self._inflight = None
 
         self._logger.debug("Saved %d gifts to %s", amount, self._path)
 

@@ -176,6 +176,24 @@ def test_a_destination_without_the_suffix_still_converts_when_free(tmp_path, cap
     assert _auth_key_of(tmp_path / "userbot.session") == AUTH_KEY
 
 
+def test_a_destination_named_only_the_suffix_is_the_file_telethon_opens(
+    tmp_path, capsys
+):
+    """`SQLiteSession` tests `endswith(".session")`, so `.session` stays as is.
+
+    `Path.suffix` of `.session` is empty, so that rule wrote `.session.session`,
+    a file Telethon given the same name never opens.
+    """
+    src = _pyrogram_session(tmp_path / "account.session")
+
+    assert convert_script.convert(src, tmp_path / ".session") == 0
+
+    capsys.readouterr()
+
+    assert _auth_key_of(tmp_path / ".session") == AUTH_KEY
+    assert not (tmp_path / ".session.session").exists()
+
+
 @pytest.mark.skipif(sys.platform == "win32", reason="POSIX mode bits only")
 def test_the_written_session_is_owner_only(tmp_path, capsys):
     src = _pyrogram_session(tmp_path / "account.session")

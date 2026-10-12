@@ -101,10 +101,25 @@ async def test_supervise_restarts_a_task_that_returns(logger, sleeps):
     assert fatal.is_set() is False
 
 
+class _RestartedError(BaseException):
+    """Not an `Exception`, so `supervise` cannot catch it and restart again."""
+
+
 async def test_supervise_lets_cancellation_through(logger, sleeps):
     started = asyncio.Event()
+    starts = 0
 
     async def factory() -> None:
+        nonlocal starts
+
+        starts += 1
+
+        if starts > 1:
+            # Reached only when the cancel was swallowed and the task restarted.
+            # Escaping `supervise` ends the task, where parking again would also
+            # swallow pytest's teardown cancel and hang the run.
+            raise _RestartedError
+
         started.set()
 
         await asyncio.Event().wait()
@@ -116,10 +131,50 @@ async def test_supervise_lets_cancellation_through(logger, sleeps):
 
     task.cancel()
 
-    with pytest.raises(asyncio.CancelledError):
-        await asyncio.wait_for(task, timeout=2.0)
+    # `asyncio.wait` (not `wait_for`) so a supervisor that swallows the
+    # cancellation fails the assertion instead of hanging the test.
+    done, _ = await asyncio.wait({task}, timeout=2)
+
+    assert task in done
+    assert task.cancelled()
+    assert starts == 1
 
     assert sleeps == []
+
+
+async def test_supervise_restarts_a_task_hit_by_a_foreign_cancellation(logger, sleeps):
+    """A library cancelling its own request future is a crash, not a shutdown."""
+    calls = 0
+    restarted = asyncio.Event()
+
+    async def factory() -> None:
+        nonlocal calls
+
+        calls += 1
+
+        if calls == 1:
+            fut = asyncio.get_running_loop().create_future()
+            fut.cancel()
+
+            await fut
+
+        restarted.set()
+
+        await asyncio.Event().wait()
+
+    fatal = asyncio.Event()
+    task = asyncio.create_task(_supervised(factory, logger, fatal))
+
+    await asyncio.wait_for(restarted.wait(), timeout=5)
+
+    assert task.done() is False
+    assert calls == 2
+    assert sleeps == [1.0]
+
+    task.cancel()
+
+    with pytest.raises(asyncio.CancelledError):
+        await asyncio.wait_for(task, timeout=5)
 
 
 async def test_supervise_stops_restarting_on_a_lost_authorization(logger, sleeps):

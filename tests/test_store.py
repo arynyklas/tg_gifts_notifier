@@ -2,6 +2,7 @@ import asyncio
 from contextlib import suppress
 import json
 from pathlib import Path
+import threading
 
 import pytest
 
@@ -145,7 +146,32 @@ async def test_live_merge_preserves_message_state(tmp_path, logger):
     assert stored.message_id == 42
     assert stored.sticker_message_id == 41
     assert stored.is_upgradable is True
+    assert stored.first_appearance_timestamp == 9999
+
+
+async def test_in_sale_payload_keeps_the_stored_first_appearance(tmp_path, logger):
+    """Without `last_sale_date` Telegram sends no first-sale date either.
+
+    The live value is then the parser's "now" fallback, so adopting it would
+    reset the gift's sell-out duration on every poll.
+    """
+    store = StarGiftsStore(tmp_path / "star_gifts.json", 0.01, logger)
+
+    await store.add(_gift(10, first_appearance_timestamp=1000))
+    await store.flush()
+
+    # Changing the supply makes `_merge_live` take the merge path; an
+    # unchanged payload would return early and hide an unconditional copy.
+    await store.apply_live_many(
+        [_gift(10, first_appearance_timestamp=9999, available_amount=5)]
+    )
+
+    stored = store.get(10)
+
+    assert stored is not None
     assert stored.first_appearance_timestamp == 1000
+    assert stored.available_amount == 5
+    assert store.is_dirty is True
 
 
 async def test_live_merge_ignores_unknown_gifts(tmp_path, logger):
@@ -293,12 +319,8 @@ async def test_a_failed_save_is_retried_instead_of_being_lost(
 
     saver = asyncio.create_task(store.run_saver())
 
-    await asyncio.sleep(0.05)
-
-    assert saver.done()
-
     with pytest.raises(OSError, match="disk is full"):
-        await saver
+        await asyncio.wait_for(saver, timeout=5)
 
     assert store.is_dirty is True
     assert not path.exists()
@@ -398,11 +420,10 @@ async def test_upgrade_sticker_id_is_persisted_separately(tmp_path, logger):
 async def test_two_writers_do_not_collide_on_the_temp_file(
     tmp_path, logger, monkeypatch
 ):
-    """A cancelled saver's `to_thread` write can still be running during flush.
+    """Two `_write_atomic` calls overlapping must not share a temp file.
 
-    `to_thread` is not cancellable, so both writers can be inside
-    `_write_atomic` at once; with one shared temp name the loser of the
-    `os.replace` race raises `FileNotFoundError` out of shutdown.
+    With one shared temp name the loser of the `os.replace` race raises
+    `FileNotFoundError` out of shutdown.
     """
     path = tmp_path / "star_gifts.json"
     first = StarGiftsStore(path, 0.0, logger)
@@ -432,8 +453,121 @@ async def test_two_writers_do_not_collide_on_the_temp_file(
 
     monkeypatch.undo()
 
-    assert json.loads(path.read_text(encoding="utf-8"))["star_gifts"][0]["id"] == 10
     assert not list(tmp_path.glob("*.tmp"))
+
+
+def _block_first_write(
+    store: StarGiftsStore, monkeypatch, *, fail: bool
+) -> tuple[asyncio.Event, threading.Event, threading.Event]:
+    """Hold the first `_write_atomic` in its thread until released.
+
+    Later writes go straight through, except that one overlapping the blocked
+    write releases it after landing — so a store that does not serialize
+    writes ends with the older snapshot on disk. The third event is set once
+    the blocked write has ended, landed or not.
+    """
+    loop = asyncio.get_running_loop()
+    started = asyncio.Event()
+    release = threading.Event()
+    finished = threading.Event()
+    original = store._write_atomic
+    calls = 0
+
+    def write(payload: str) -> None:
+        nonlocal calls
+
+        calls += 1
+
+        if calls > 1:
+            original(payload)
+            release.set()
+
+            return
+
+        loop.call_soon_threadsafe(started.set)
+        release.wait(5)
+
+        try:
+            if fail:
+                raise OSError("disk is full")
+
+            original(payload)
+
+        finally:
+            finished.set()
+
+    monkeypatch.setattr(store, "_write_atomic", write)
+
+    return started, release, finished
+
+
+async def _cancel_saver_mid_write(
+    store: StarGiftsStore, started: asyncio.Event
+) -> None:
+    saver = asyncio.create_task(store.run_saver())
+
+    await asyncio.wait_for(started.wait(), timeout=5)
+
+    saver.cancel()
+
+    with suppress(asyncio.CancelledError):
+        await saver
+
+
+async def test_an_orphaned_write_cannot_overwrite_a_newer_flush(
+    tmp_path, logger, monkeypatch
+):
+    """Shutdown cancels the saver while its write thread is still running.
+
+    The flush that follows must not be overtaken by that older snapshot.
+    """
+    path = tmp_path / "star_gifts.json"
+    store = StarGiftsStore(path, 0.0, logger)
+    started, release, finished = _block_first_write(store, monkeypatch, fail=False)
+
+    await store.add(_gift(10))
+    await _cancel_saver_mid_write(store, started)
+    await store.set_message_ids(10, message_id=77)
+
+    flush = asyncio.create_task(store.flush())
+
+    # A store that serializes writes holds this flush until the orphan has
+    # ended, so nothing else releases it. One that does not lets the flush land
+    # first, and the flush's own write releases the orphan.
+    if not await asyncio.to_thread(release.wait, 0.5):
+        release.set()
+
+    await asyncio.wait_for(flush, timeout=5)
+    # Without serialization the orphan is still running here and lands last.
+    assert await asyncio.to_thread(finished.wait, 5)
+
+    payload = json.loads(path.read_text(encoding="utf-8"))
+
+    assert payload["star_gifts"][0]["message_id"] == 77
+    assert store.is_dirty is False
+
+
+async def test_flush_retries_a_failed_orphaned_write(tmp_path, logger, monkeypatch):
+    """The saver cleared dirty before its write; that write then failed."""
+    path = tmp_path / "star_gifts.json"
+    store = StarGiftsStore(path, 0.0, logger)
+    started, release, _ = _block_first_write(store, monkeypatch, fail=True)
+
+    await store.add(_gift(10))
+    await _cancel_saver_mid_write(store, started)
+
+    flush = asyncio.create_task(store.flush())
+
+    for _ in range(5):
+        await asyncio.sleep(0)
+
+    release.set()
+    await asyncio.wait_for(flush, timeout=5)
+
+    payload = json.loads(path.read_text(encoding="utf-8"))
+
+    assert payload["star_gifts"][0]["id"] == 10
+    assert store.is_dirty is False
 
 
 async def test_flush_writes_immediately(tmp_path, logger):
