@@ -7,6 +7,7 @@ about its bytes and contents, not about which helpers were called.
 from argparse import Namespace
 import asyncio
 from collections.abc import Callable, Iterator
+from dataclasses import asdict
 from datetime import UTC, datetime, tzinfo
 import json
 import logging
@@ -632,7 +633,7 @@ async def test_an_interrupted_announcement_is_resumed_and_flushed_on_shutdown(
         json.dumps(
             {
                 "version": constants.SCHEMA_VERSION,
-                "star_gifts": [gift.model_dump() for gift in gifts],
+                "star_gifts": [asdict(gift) for gift in gifts],
             }
         ),
         encoding="utf-8",
@@ -833,3 +834,15 @@ async def test_a_lost_session_behind_a_flood_wait_exits_two(
 
     assert data_path.read_bytes() == legacy
     assert detected == []
+
+
+async def test_a_data_file_with_wrongly_typed_gift_data_exits_one(
+    cfg, logger, data_path, client
+):
+    """It is reported like malformed JSON instead of escaping `_run`."""
+    data_path.write_text(
+        json.dumps({"version": 2, "star_gifts": [{"id": 1, "price": "x"}]}),
+        encoding="utf-8",
+    )
+
+    assert await _start(cfg, logger) == 1

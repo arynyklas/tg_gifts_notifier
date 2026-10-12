@@ -1,10 +1,10 @@
-from pydantic import BaseModel, ConfigDict, Field
+from dataclasses import dataclass, field
+
+from adaptix import Retort
 
 
-class StarGiftData(BaseModel):
-    # `extra="ignore"` drops the legacy v1 `sticker_file_id` / `sticker_file_name` keys.
-    model_config = ConfigDict(extra="ignore")
-
+@dataclass(slots=True, kw_only=True)
+class StarGiftData:
     id: int
     number: int
     price: int
@@ -27,8 +27,12 @@ class StarGiftData(BaseModel):
     announce_pending: bool = False
 
 
-class StarGiftsFile(BaseModel):
-    model_config = ConfigDict(extra="ignore")
-
+@dataclass(slots=True, kw_only=True)
+class StarGiftsFile:
     version: int = 1  # legacy files have no "version" key
-    star_gifts: list[StarGiftData] = Field(default_factory=list)
+    star_gifts: list[StarGiftData] = field(default_factory=list)
+
+
+# Loads and dumps the data file. adaptix skips unknown keys by default, which
+# drops the legacy v1 `sticker_file_id` / `sticker_file_name` keys.
+GIFTS_RETORT = Retort()

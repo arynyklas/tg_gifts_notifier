@@ -1,5 +1,6 @@
 import asyncio
 from contextlib import suppress
+from dataclasses import asdict, replace
 import json
 from pathlib import Path
 import threading
@@ -88,7 +89,7 @@ def test_legacy_file_is_migrated_and_dead_keys_are_dropped(tmp_path, logger):
     assert limited.is_upgradable is True
     assert limited.sticker_message_id is None
     assert not hasattr(limited, "sticker_file_id")
-    assert "sticker_file_id" not in limited.model_dump()
+    assert "sticker_file_id" not in asdict(limited)
 
 
 def test_missing_file_yields_empty_store(tmp_path, logger):
@@ -190,7 +191,7 @@ async def test_identical_payload_leaves_the_store_clean(tmp_path, logger):
     store = StarGiftsStore(tmp_path / "star_gifts.json", 0.01, logger)
     live = _gift(10, available_amount=5, last_sale_timestamp=2000)
 
-    await store.add(live.model_copy())
+    await store.add(replace(live))
 
     await store.flush()
 

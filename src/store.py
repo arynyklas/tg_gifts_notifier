@@ -4,10 +4,13 @@ import json
 from logging import Logger
 import os
 from pathlib import Path
+import traceback
 from typing import Self
 
+from adaptix.load_error import LoadError
+
 from src import constants
-from src.models import StarGiftData, StarGiftsFile
+from src.models import GIFTS_RETORT, StarGiftData, StarGiftsFile
 
 
 def _merge_live(stored: StarGiftData, live: StarGiftData) -> bool:
@@ -92,7 +95,15 @@ class StarGiftsStore:
 
             return store, False
 
-        parsed = StarGiftsFile.model_validate(json.loads(raw))
+        try:
+            parsed = GIFTS_RETORT.load(json.loads(raw), StarGiftsFile)
+
+        except LoadError as ex:
+            # `main._run` reports a ValueError as an unreadable data file; the
+            # nested sub-errors name the offending gift and field.
+            detail = "".join(traceback.format_exception_only(ex)).strip()
+
+            raise ValueError(f"invalid gift data: {detail}") from ex
 
         store._gifts = {gift.id: gift for gift in parsed.star_gifts}
         store.loaded_version = parsed.version
@@ -297,10 +308,14 @@ class StarGiftsStore:
 
             async with self._lock:
                 gifts = self.snapshot()
-                payload = StarGiftsFile(
-                    version=constants.SCHEMA_VERSION,
-                    star_gifts=gifts,
-                ).model_dump_json(indent=4)
+                payload = json.dumps(
+                    GIFTS_RETORT.dump(
+                        StarGiftsFile(
+                            version=constants.SCHEMA_VERSION, star_gifts=gifts
+                        )
+                    ),
+                    indent=4,
+                )
                 amount = len(gifts)
 
             inflight = asyncio.ensure_future(
