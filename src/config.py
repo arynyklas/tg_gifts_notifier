@@ -109,6 +109,8 @@ class NotificationsConfig:
     """Delay after posting a text, in seconds. Paces upgrade posts too."""
     timezone: Annotated[str, Timezone()] = "UTC"
     """IANA timezone of the rendered timestamps and of `--save-only` dump names (e.g. `Europe/Moscow`)."""
+    silent: bool = False
+    """Post new gift and upgrade messages without a notification sound (Telegram's `disable_notification`). Edits never notify."""
 
 
 @dataclass(frozen=True, slots=True, kw_only=True)

@@ -139,6 +139,7 @@ CI runs the same commands, except that its `uv sync --locked` stands in for `uv 
 | `notifications.after_sticker_delay` | Number | `1.0` | Delay after posting a sticker, before its text, in seconds. Paces upgrade posts too. |
 | `notifications.after_text_delay` | Number | `2.0` | Delay after posting a text, in seconds. Paces upgrade posts too. |
 | `notifications.timezone` | String | `"UTC"` | IANA timezone of the rendered timestamps and of `--save-only` dump names (e.g. `Europe/Moscow`). |
+| `notifications.silent` | Boolean | `false` | Post new gift and upgrade messages without a notification sound (Telegram's `disable_notification`). Edits never notify. |
 | `upgrades.chat_id` | Integer or `null` | `null` | Chat where upgrade messages are posted; `null` disables upgrade checks. Gifts are then never probed, so setting a chat later announces every gift that became upgradable in the meantime. |
 | `upgrades.check_interval` | Number | `2.0` | Delay between upgradability check cycles, in seconds. |
 | `upgrades.check_concurrency` | Integer | `4` | Concurrent upgradability probes; `--save-only` and a data file migration use it even with upgrades off. At least 1. |

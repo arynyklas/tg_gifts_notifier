@@ -76,6 +76,7 @@ def test_the_example_config_satisfies_the_schema():
         pytest.param({"logging.file.max_bytes": 1.5}, (), id="float-for-int"),
         pytest.param({"upgrades": None}, (), id="null-upgrades-section"),
         pytest.param({"detector.check_interval": 1}, (), id="int-for-float"),
+        pytest.param({"notifications.silent": 1}, (), id="int-for-bool"),
         pytest.param({"upgrades.chat_id": None}, (), id="null-upgrades-chat"),
         pytest.param({}, ("upgrades",), id="omitted-upgrades"),
         pytest.param({}, ("detector",), id="omitted-defaulted-section"),

@@ -213,6 +213,8 @@ async def send_gift_sticker(
     peer: types.TypeInputPeer,
     document: types.Document,
     logger: Logger,
+    *,
+    silent: bool = False,
 ) -> types.Message:
     """Post a gift sticker by re-uploading its bytes.
 
@@ -262,6 +264,7 @@ async def send_gift_sticker(
             mime_type=document.mime_type,
             attributes=[types.DocumentAttributeFilename(name)],
             force_document=False,
+            silent=silent,
         ),
     )
 

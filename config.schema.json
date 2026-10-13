@@ -124,6 +124,11 @@
           "description": "IANA timezone of the rendered timestamps and of `--save-only` dump names (e.g. `Europe/Moscow`).",
           "type": "string",
           "default": "UTC"
+        },
+        "silent": {
+          "description": "Post new gift and upgrade messages without a notification sound (Telegram's `disable_notification`). Edits never notify.",
+          "type": "boolean",
+          "default": false
         }
       },
       "additionalProperties": false,

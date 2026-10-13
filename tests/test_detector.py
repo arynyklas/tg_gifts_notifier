@@ -230,6 +230,7 @@ class FakeClient:
         mime_type: str,
         attributes: list[types.TypeDocumentAttribute],
         force_document: bool,
+        silent: bool,
     ) -> FakeMessage:
         self.sent_stickers.append(
             {
@@ -239,6 +240,7 @@ class FakeClient:
                 "mime_type": mime_type,
                 "attributes": attributes,
                 "force_document": force_document,
+                "silent": silent,
             }
         )
         self._next_message_id += 1
@@ -259,6 +261,8 @@ class FakeBotApi:
         chat_id: int,
         text: str,
         reply_to_message_id: int | None = None,
+        *,
+        disable_notification: bool = False,
     ) -> int:
         if self.fail_send_times > 0:
             self.fail_send_times -= 1
@@ -270,6 +274,7 @@ class FakeBotApi:
                 "chat_id": chat_id,
                 "text": text,
                 "reply_to_message_id": reply_to_message_id,
+                "disable_notification": disable_notification,
             }
         )
         self._next_message_id += 1

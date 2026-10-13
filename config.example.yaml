@@ -27,6 +27,7 @@ notifications:
   after_sticker_delay: 1.0
   after_text_delay: 2.0
   timezone: UTC
+  silent: false
 
 # Omit this section, or set `chat_id` to `null`, if you don't need upgrades.
 # Bots can't check upgrades for gifts (Telegram raises [400 BOT_METHOD_INVALID]),

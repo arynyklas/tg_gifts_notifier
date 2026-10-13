@@ -38,6 +38,7 @@ REGENERATE_COMMAND = "uv run python -m scripts.generate_config_schema"
 
 # Python type -> (JSON Schema type, README wording)
 _SCALARS: dict[object, tuple[str, str]] = {
+    bool: ("boolean", "Boolean"),
     str: ("string", "String"),
     int: ("integer", "Integer"),
     float: ("number", "Number"),

@@ -122,7 +122,11 @@ class Notifier:
         try:
             if gift.sticker_message_id is None and sticker is not None:
                 message = await send_gift_sticker(
-                    self._client, self._notify_peer, sticker, self._logger
+                    self._client,
+                    self._notify_peer,
+                    sticker,
+                    self._logger,
+                    silent=self._notifications.silent,
                 )
 
                 await self._store.set_message_ids(
@@ -134,6 +138,7 @@ class Notifier:
                 self._notifications.chat_id,
                 self.render_gift_text(gift),
                 reply_to_message_id=gift.sticker_message_id,
+                disable_notification=self._notifications.silent,
             )
 
             await self._store.set_message_ids(gift.id, message_id=message_id)
@@ -212,7 +217,11 @@ class Notifier:
 
                 else:
                     message = await send_gift_sticker(
-                        self._client, peer, sticker, self._logger
+                        self._client,
+                        peer,
+                        sticker,
+                        self._logger,
+                        silent=self._notifications.silent,
                     )
                     sticker_message_id = message.id
 
@@ -225,6 +234,7 @@ class Notifier:
                 chat_id,
                 self._upgrades.text.format(id=gift.id),
                 reply_to_message_id=sticker_message_id,
+                disable_notification=self._notifications.silent,
             )
 
         except errors.FileReferenceExpiredError:

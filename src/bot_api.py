@@ -60,6 +60,8 @@ class BotApiClient:
         chat_id: int,
         text: str,
         reply_to_message_id: int | None = None,
+        *,
+        disable_notification: bool = False,
     ) -> int:
         payload: dict[str, Any] = {"chat_id": chat_id, "text": text}
 
@@ -68,6 +70,9 @@ class BotApiClient:
                 "message_id": reply_to_message_id,
                 "allow_sending_without_reply": True,
             }
+
+        if disable_notification:
+            payload["disable_notification"] = True
 
         result = await self._request("sendMessage", payload)
         message_id = result.get("message_id") if isinstance(result, dict) else None

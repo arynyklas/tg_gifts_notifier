@@ -218,6 +218,8 @@ class _RevokedBotApi:
         chat_id: int,
         text: str,
         reply_to_message_id: int | None = None,
+        *,
+        disable_notification: bool = False,
     ) -> int:
         raise errors.SessionRevokedError(request=None)
 
