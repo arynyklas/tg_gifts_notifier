@@ -1,0 +1,90 @@
+name: CI
+
+on:
+  push:
+    branches:
+      - '**'
+    tags-ignore:
+      - '**'
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.head_ref || github.ref }}
+  cancel-in-progress: true
+
+env:
+  PYTHON_VERSION: "3.13"
+
+jobs:
+  lint:
+    name: Lint & Format (Ruff)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+
+      - uses: astral-sh/setup-uv@v4
+        with:
+          enable-cache: true
+          cache-dependency-glob: "uv.lock"
+
+      - name: Install dependencies
+        run: uv sync --locked --group dev
+
+      - name: Ruff lint
+        run: uv run ruff check src tests scripts --output-format=github
+
+      - name: Ruff format check
+        run: uv run ruff format src tests scripts --check
+
+  type-check:
+    name: Type Check (ty)
+    runs-on: ubuntu-latest
+    # Intentionally non-blocking while `ty` is pre-1.0: a green check here does
+    # not mean the type check passed.
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+
+      - uses: astral-sh/setup-uv@v4
+        with:
+          enable-cache: true
+          cache-dependency-glob: "uv.lock"
+
+      - name: Install dependencies
+        run: uv sync --locked --group dev --group tests
+
+      - name: Run ty
+        run: uv run ty check src tests scripts
+
+  test:
+    name: Tests
+    runs-on: ubuntu-latest
+    # The suite takes seconds; a regression that hangs it (a task that swallows
+    # its own cancellation) should fail here, not after GitHub's 6-hour default.
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+
+      - uses: astral-sh/setup-uv@v4
+        with:
+          enable-cache: true
+          cache-dependency-glob: "uv.lock"
+
+      - name: Install dependencies
+        run: uv sync --locked --group tests
+
+      - name: Run tests
+        run: uv run pytest

@@ -1,0 +1,157 @@
+[project]
+name = "tg-gifts-notifier"
+version = "2.0.0"
+description = "Telegram star gifts detector and notifier"
+readme = "README.md"
+license = "MIT"
+requires-python = ">=3.13"
+dependencies = [
+    "telethon>=1.44.0",
+    "cryptg>=0.6.0",
+    "niquests>=3.21.0",
+    "tzdata>=2025.2",
+    "qrcode>=8.2",
+    "certifi>=2026.7.22",
+    "adaptix>=3.0.0b12",
+    "dature[yaml]>=1.6.0,<2",
+]
+
+[dependency-groups]
+dev = [
+    "ruff>=0.16.3",
+    "ty>=0.0.72",
+    "pre-commit>=4.0.1",
+]
+tests = [
+    "jsonschema>=4.26.0",
+    "pytest>=9.0.2",
+    "pytest-asyncio>=1.4.0",
+]
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+asyncio_default_fixture_loop_scope = "function"
+addopts = [
+    "-ra",
+    "-q",
+    "--strict-markers",
+    "--tb=short",
+]
+testpaths = ["tests"]
+pythonpath = ["."]
+
+[tool.ty.environment]
+python-version = "3.13"
+
+[tool.ty.src]
+include = ["src", "tests", "scripts"]
+
+[tool.ruff]
+# Python version compatibility
+target-version = "py313"
+
+# Line length configuration
+line-length = 88
+indent-width = 4
+
+# Enable specific rule sets for comprehensive code quality
+lint.select = [
+    # Pyflakes
+    "F",     # Pyflakes rules for logical errors
+
+    # pycodestyle
+    "E",     # pycodestyle errors
+    "W",     # pycodestyle warnings
+
+    # isort
+    "I",     # Import sorting and organization
+
+    # pep8-naming
+    "N",     # PEP 8 naming conventions
+
+    # pyupgrade
+    "UP",    # Modern Python syntax upgrades
+
+    # flake8-bugbear
+    "B",     # Common bugs and design problems
+
+    # flake8-simplify
+    "SIM",   # Code simplification suggestions
+
+    # flake8-comprehensions
+    "C4",    # List/dict/set comprehension improvements
+
+    # bandit (security)
+    "S",     # Security vulnerability detection
+
+    # flake8-annotations
+    "ANN",   # Type annotation enforcement
+
+    # flake8-async
+    "ASYNC", # Async/await usage best practices
+
+    # flake8-logging-format
+    "G",     # Logging format and best practices
+
+    # Pylint
+    "PL",    # Pylint rules for code quality
+
+    # Ruff-specific rules
+    "RUF",   # Ruff-specific improvements
+]
+
+# Ignore specific rules that might be too strict for this project
+lint.ignore = [
+    # Line length (handled by formatter)
+    "E501",    # Line too long
+
+    # Security rules for development/testing
+    "S101",    # Use of `assert` detected (common in tests)
+    "S311",    # Standard pseudo-random generators are not suitable for cryptographic purposes
+
+    # Pylint rules that might be too aggressive
+    "PLR0913", # Too many arguments to function call
+    "PLR2004", # Magic value used in comparison
+]
+
+lint.fixable = ["ALL"]
+
+# Per-file ignores for specific patterns
+[tool.ruff.lint.per-file-ignores]
+# Tests legitimately embed fake tokens; S105 flags the literal, not a real leak.
+# PLR0917: pytest injects fixtures by name, never positionally.
+"tests/*" = ["S101", "S105", "ANN", "PLR2004", "PLR0917", "SIM117"]
+"scripts/*" = ["T201", "S101"]
+"__init__.py" = ["F401"]
+
+# Configure import sorting
+[tool.ruff.lint.isort]
+known-first-party = ["src"]
+section-order = ["future", "standard-library", "third-party", "first-party", "local-folder"]
+split-on-trailing-comma = true
+force-sort-within-sections = true
+
+# Formatter configuration
+[tool.ruff.format]
+quote-style = "double"
+indent-style = "space"
+skip-magic-trailing-comma = false
+line-ending = "lf"
+docstring-code-format = true
+
+# Additional linting configuration
+[tool.ruff.lint.mccabe]
+max-complexity = 10
+
+[tool.ruff.lint.flake8-quotes]
+inline-quotes = "double"
+multiline-quotes = "double"
+
+[tool.ruff.lint.flake8-annotations]
+allow-star-arg-any = true
+suppress-dummy-args = true
+
+[tool.ruff.lint.pylint]
+max-locals = 15
+max-branches = 12
+max-statements = 50
