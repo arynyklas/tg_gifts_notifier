@@ -194,7 +194,8 @@ class Notifier:
         """Post sticker + text for an upgraded gift; safe to retry.
 
         The sticker message id is persisted before the text is sent, so a retry
-        never double-posts the sticker.
+        never double-posts the sticker, and the gift is marked upgradable as soon
+        as its text is posted.
         """
         peer = self._upgrades_peer
         chat_id = self._upgrades.chat_id
@@ -236,6 +237,10 @@ class Notifier:
                 reply_to_message_id=sticker_message_id,
                 disable_notification=self._notifications.silent,
             )
+
+            # Marked before the pacing delay: a stop during it must not leave the
+            # gift a candidate whose upgrade text the next start posts again.
+            await self._store.mark_upgradable(gift.id)
 
         except errors.FileReferenceExpiredError:
             self._logger.warning(

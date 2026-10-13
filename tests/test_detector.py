@@ -886,6 +886,60 @@ async def test_a_failed_upgrade_text_never_posts_a_second_sticker(
     assert limited.is_upgradable is True
 
 
+async def test_a_stop_during_the_pause_after_an_upgrade_text_never_reposts_it(
+    config, logger, tmp_path, first_payload, monkeypatch
+):
+    """The gift must be marked upgradable as soon as its upgrade text is posted.
+
+    Marking it only after the pacing delay meant a Ctrl+C during that delay left
+    it a candidate, and the next start posted the same upgrade text again.
+    """
+    paced = replace(
+        config, notifications=replace(config.notifications, after_text_delay=30.0)
+    )
+    detector, client, bot_api, store = _build(
+        paced, logger, tmp_path, [first_payload], check_upgrades=True
+    )
+    pausing = asyncio.Event()
+    hold = asyncio.Event()
+
+    async def sleep(delay: float) -> None:
+        if hold.is_set() and delay == paced.notifications.after_text_delay:
+            pausing.set()
+            await asyncio.Event().wait()  # until the shutdown cancels it
+
+    monkeypatch.setattr("src.notifier.asyncio", _AsyncioWithSleep(sleep))
+
+    await detector.poll_once()
+
+    client.upgradable = {GIFT_LIMITED_ID}
+    hold.set()
+    cycle = asyncio.create_task(detector.check_upgrades_once())
+
+    await asyncio.wait_for(pausing.wait(), timeout=5)
+
+    cycle.cancel()
+    done, _ = await asyncio.wait({cycle}, timeout=5)
+
+    assert cycle in done
+    assert cycle.cancelled()
+
+    hold.clear()
+
+    assert await detector.check_upgrades_once() == 0
+
+    upgrade_texts = [
+        sent for sent in bot_api.sent if sent["chat_id"] == config.upgrades.chat_id
+    ]
+
+    assert len(upgrade_texts) == 1
+
+    limited = store.get(GIFT_LIMITED_ID)
+
+    assert limited is not None
+    assert limited.is_upgradable is True
+
+
 async def test_a_gift_without_an_upgrade_price_waits_out_the_probe_cooldown(
     config, logger, tmp_path, first_payload, monkeypatch
 ):

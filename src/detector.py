@@ -255,8 +255,6 @@ class Detector:
             ):
                 continue
 
-            await self._store.mark_upgradable(gift_id)
-
             announced += 1
 
         return announced
