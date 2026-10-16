@@ -1,11 +1,13 @@
 from collections.abc import Iterator
+import json
 import logging
+import sys
 
 import pytest
 
 from src import constants
 from src.config import ConsoleLogConfig, FileLogConfig, LoggingConfig
-from src.logger import get_logger
+from src.logger import JsonFormatter, get_logger
 
 _NAMES = (
     "tests_logger_clamp",
@@ -95,3 +97,34 @@ def test_repeated_calls_do_not_duplicate_handlers(tmp_path):
 
     assert first is second
     assert len(first.handlers) == 2
+
+
+def test_json_formatter_emits_one_object_per_line():
+    record = logging.LogRecord(
+        "x.y", logging.WARNING, __file__, 1, "  hello %s  ", ("world",), None
+    )
+    record.gift_id = 42
+    line = JsonFormatter().format(record)
+    entry = json.loads(line)
+
+    assert "\n" not in line
+    assert entry["level"] == "WARNING"
+    assert entry["logger"] == "x.y"
+    assert entry["msg"] == "hello world"
+    assert entry["gift_id"] == 42
+    assert entry["ts"].endswith("Z")
+    assert len(entry["ts"]) == len("2026-01-01T00:00:00.000Z")
+    assert "exc" not in entry
+
+
+def test_json_formatter_includes_traceback():
+    try:
+        raise ValueError("boom")
+    except ValueError:
+        record = logging.LogRecord(
+            "x", logging.ERROR, __file__, 1, "failed", None, sys.exc_info()
+        )
+
+    entry = json.loads(JsonFormatter().format(record))
+
+    assert "ValueError: boom" in entry["exc"]

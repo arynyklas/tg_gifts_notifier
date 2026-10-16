@@ -1,15 +1,42 @@
+from datetime import UTC, datetime
+import json
 import logging
 from logging.handlers import RotatingFileHandler
+import sys
+from typing import Any
 
 from src import constants
 from src.config import LoggingConfig
 
+# Attributes every `LogRecord` carries; anything else came in through `extra=`.
+_STANDARD_ATTRS = frozenset(
+    vars(logging.LogRecord("", logging.INFO, "", 0, "", None, None))
+) | {"message", "asctime", "taskName"}
 
-class StrippingFormatter(logging.Formatter):
+
+class JsonFormatter(logging.Formatter):
+    """One JSON object per line: `ts`, `level`, `logger`, `msg`, `exc`, extras."""
+
     def format(self, record: logging.LogRecord) -> str:
-        record.msg = record.msg.strip() if isinstance(record.msg, str) else record.msg
+        entry: dict[str, Any] = {
+            "ts": datetime.fromtimestamp(record.created, UTC)
+            .isoformat(timespec="milliseconds")
+            .replace("+00:00", "Z"),
+            "level": record.levelname,
+            "logger": record.name,
+            "msg": record.getMessage().strip(),
+        }
 
-        return super().format(record)
+        if record.exc_info:
+            entry["exc"] = self.formatException(record.exc_info)
+        elif record.exc_text:
+            entry["exc"] = record.exc_text
+
+        for key, value in vars(record).items():
+            if key not in _STANDARD_ATTRS and key not in entry:
+                entry[key] = value
+
+        return json.dumps(entry, ensure_ascii=False, default=str)
 
 
 _LEVELS = logging.getLevelNamesMapping()
@@ -25,12 +52,9 @@ def get_logger(name: str, cfg: LoggingConfig) -> logging.Logger:
     file_level = _LEVELS[cfg.file.level]
 
     logger.setLevel(min(console_level, file_level))
+    formatter = JsonFormatter()
 
-    formatter = StrippingFormatter(
-        "%(asctime)s - %(levelname)s - [%(filename)s:%(lineno)d] - %(message)s"
-    )
-
-    console_handler = logging.StreamHandler()
+    console_handler = logging.StreamHandler(sys.stdout)
     console_handler.setLevel(console_level)
     console_handler.setFormatter(formatter)
 

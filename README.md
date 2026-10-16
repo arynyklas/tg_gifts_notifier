@@ -101,6 +101,36 @@ icacls config.yaml /inheritance:r /grant:r "%USERNAME%:F"
 
 An announcement interrupted by a crash or a Ctrl+C — the gift was stored but its message was never sent — is re-sent on the next start; the log reports `Re-announcing N gifts interrupted by an earlier run`.
 
+### Logging
+
+Every log line, on stdout and in `logging.file.path`, is one JSON object: `ts` (UTC, RFC 3339 with milliseconds, `Z` suffix), `level`, `logger`, `msg`, `exc` (the traceback, only when an exception is logged) and any `extra=` fields.
+
+### Deployment (systemd)
+
+Every runtime write is resolved against the working directory — never next to the code — so the checkout can stay read-only:
+
+| Path (relative to the working directory) | Written by |
+| --- | --- |
+| `userbot.session_path` (`sessions/userbot.session`) | Telethon session, `--login` |
+| `storage.data_filepath` (`star_gifts.json`), a temporary sibling during each save, and `star_gifts_dump_<timestamp>.json` | gift store, `--save-only` |
+| `logging.file.path` (`logs/main.log` and its rotations) | file log handler |
+
+Absolute paths in the config are honoured as given. The config file is chosen with `--config` (default `config.yaml` in the working directory). A typical unit keeps code at `/opt/tg-gifts-notifier` (root-owned, read-only for the service), state at `/var/lib/tg-gifts-notifier` (service user, `0700`) and the config in `/run/secrets/tg-gifts-notifier/` rendered before start:
+
+```ini
+[Service]
+User=tg-gifts-notifier
+WorkingDirectory=/var/lib/tg-gifts-notifier
+StateDirectory=tg-gifts-notifier
+StateDirectoryMode=0700
+ExecStart=/opt/tg-gifts-notifier/.venv/bin/python -m src.main --config /run/secrets/tg-gifts-notifier/config.yaml
+Environment=PYTHONPATH=/opt/tg-gifts-notifier
+Environment=PYTHONDONTWRITEBYTECODE=1
+Restart=on-failure
+```
+
+Exit code `2` (session not authorized or lost) needs an operator to rerun `--login` with the same `--config` and working directory; consider `RestartPreventExitStatus=2`.
+
 ## Development
 
 ```sh
